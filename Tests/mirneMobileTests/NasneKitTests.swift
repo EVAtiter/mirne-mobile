@@ -528,6 +528,27 @@ struct RecordingCatalogTests {
         #expect(error?.code == "402")
     }
 
+    @Test("録画の削除の Fault 877 は保護の文言にする。ほかの操作の 877 と、削除のほかの Fault は今のまま")
+    func deleteProtectedTitle() async throws {
+        let fault877 = Data(String(decoding: NasneFixture.data("soap/conflict_fault.xml"), as: UTF8.self)
+            .replacingOccurrences(of: "<errorCode>402</errorCode>", with: "<errorCode>877</errorCode>").utf8)
+        let http = MockHTTP()
+        let catalog = RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
+
+        http.reply("/XSRS", method: "POST", status: 500, body: fault877)
+        let protected = await #expect(throws: NasneError.self) { try await catalog.deleteTitle(id: "12") }
+        #expect(protected?.messageKey == "error.titleProtected")
+        #expect(protected?.code == "877")
+        #expect(ErrorText.present(try #require(protected)).title == "この録画は保護されています")
+
+        let other = await #expect(throws: NasneError.self) { try await catalog.schedules() }
+        #expect(other?.messageKey == "error.soapFault")
+
+        http.reply("/XSRS", method: "POST", status: 500, body: NasneFixture.data("soap/conflict_fault.xml"))
+        let invalid = await #expect(throws: NasneError.self) { try await catalog.deleteTitle(id: "12") }
+        #expect(invalid?.messageKey == "error.invalidArgs")
+    }
+
     @Test("SOAP の封筒：引数の値をエスケープし、SOAPAction を付ける")
     func envelope() async throws {
         let http = MockHTTP()

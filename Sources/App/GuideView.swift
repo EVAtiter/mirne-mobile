@@ -373,8 +373,9 @@ struct GuideView: View {
         .onScrollGeometryChange(for: GuideScrollGeometry.self) {
             GuideScrollGeometry(offset: CGPoint(x: $0.contentOffset.x + $0.contentInsets.leading, y: $0.contentOffset.y + $0.contentInsets.top),
                                 viewportHeight: $0.containerSize.height)
-        } action: { _, geometry in
+        } action: { old, geometry in
             scroll.update(geometry, dayCount: table.days.count, hourCount: table.hours.count)
+            if old.offset != geometry.offset { hover.scrolled() }
         }
         .overlay(alignment: .topLeading) {
             FloatingRuler(scroll: scroll, top: headerHeight) { rulerContent(table, now: now) }
@@ -781,8 +782,18 @@ private final class GuideHoverState {
         }
     }
 
+    /// 番組表が送られた：吹き出しを閉じ、待っている吹き出しも取り消す。マウスの下の番組も忘れ、止まってから番組の上に置き直すと出す。
+    ///
+    /// 吹き出しは番組表とは別の小さな窓なので、出したまま送ると、マウスの下に来た吹き出しがスクロールの操作を受けてしまい、
+    /// 番組表がそこで止まった（2026-11-21）
+    func scrolled() {
+        guard detail != nil || task != nil || hovered != nil else { return }
+        reset()
+    }
+
     func reset() {
         task?.cancel()
+        task = nil
         hovered = nil
         activeRow = nil
         if detail != nil { detail = nil }
@@ -884,6 +895,7 @@ private struct GuidePopoverHost: View {
             .popover(item: Binding(get: { detail }, set: { if $0 == nil, detail != nil { hover.dismiss() } }),
                      attachmentAnchor: .rect(.rect(anchorRect(detail))), arrowEdge: .trailing) { detail in
                 ProgramDetail(event: detail.placement.event)
+                    .background(PopoverScrollWatcher { hover.scrolled() })
             }
     }
 
@@ -976,6 +988,52 @@ private struct ProgramCell: View, Equatable {
             .overlay(alignment: .top) { GuideRule(axis: .horizontal) }
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 吹き出しの窓がスクロールの操作を受けたら知らせる。
+///
+/// 吹き出しは番組表とは別の小さな窓なので、マウスが吹き出しの上にあるとスクロールの操作は吹き出しに届き、番組表は動かない
+/// （番組表が送られたら閉じるだけでは、吹き出しの上で始めたスワイプで閉じなかった。2026-11-21）。
+/// 受けたら吹き出しを閉じ、続きの操作が下の番組表に届くようにする。受けた 1 回は吹き出しで捨てる
+private struct PopoverScrollWatcher: NSViewRepresentable {
+    let onScroll: () -> Void
+
+    func makeNSView(context: Context) -> WatcherView {
+        let view = WatcherView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ view: WatcherView, context: Context) {
+        view.onScroll = onScroll
+    }
+
+    static func dismantleNSView(_ view: WatcherView, coordinator: ()) {
+        view.stopWatching()
+    }
+
+    final class WatcherView: NSView {
+        var onScroll: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopWatching()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, let window = self.window, event.window === window else { return event }
+                self.onScroll?()
+                return nil
+            }
+        }
+
+        func stopWatching() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 

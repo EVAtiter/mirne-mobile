@@ -588,8 +588,13 @@ public struct RecordingCatalogService: Sendable {
 
     /// 録画を消す（`X_DeleteTitle`。入る引数は `TitleID` だけで、出る値は無い）。自動で再試行しない。
     /// 2026-11-21 に Buffalo 製で、一覧の ID のまま送ると消え、3 つの件数がすぐ 1 減ることを確かめた
+    /// 保護した録画なら nasne は Fault 877 で断るので、その誤りは保護の文言の鍵に直す
     public func deleteTitle(id: String) async throws {
-        _ = try await call(actions.deleteTitle, [(names.titleID, id)])
+        do {
+            _ = try await call(actions.deleteTitle, [(names.titleID, id)])
+        } catch let error as NasneError where error.category == .soapFault && error.code == NasneError.titleProtectedFault {
+            throw NasneError.titleProtected(from: error)
+        }
     }
 
     /// ContentDirectory の Browse（直下の子の item。1 回に 50 件までなので頁を送る）

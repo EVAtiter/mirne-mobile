@@ -76,6 +76,15 @@ public struct NasneError: Error, Sendable, Equatable, CustomStringConvertible {
     public static let manualScheduleExistsFault = "830"
     /// 予約の数が上限（100 件）のときの Fault（torne mobile HB §74.7）
     public static let scheduleLimitFault = "836"
+    /// 保護した録画を消そうとしたときの Fault（`X_DeleteTitle`。torne mobile HB 1.4.4 が SIE 製で測った）。
+    /// ほかの操作で返ったときの意味は分からないので、コードだけでは鍵を分けず、録画の削除のときだけ `titleProtected` に直す
+    public static let titleProtectedFault = "877"
+
+    /// 録画の削除で、保護した録画だったとき
+    public static func titleProtected(from fault: NasneError) -> NasneError {
+        NasneError(category: fault.category, code: fault.code, source: fault.source, retryable: false,
+                   messageKey: "error.titleProtected", detail: fault.detail)
+    }
 
     /// UPnP の Fault から作る。実測で意味が分かったコードは鍵を分ける
     /// （402 = 要求の形の誤り、803 = ID の形の誤り。どちらも利用者の操作ではなく実装の誤り。

@@ -226,7 +226,7 @@ private let creationNow = Date(timeIntervalSince1970: 1_795_174_890)
 @MainActor
 @Suite("手動の予約の作成")
 struct ScheduleCreationTests {
-    @Test("ひな形：日時は +09:00 のコロン形、画質と録画先は組（DR = HDD・3倍 = USBHDD）、matchingID は ,,nid,eventId、番組名は送らない")
+    @Test("ひな形：日時は +09:00 のコロン形、録画先は画質によらず内蔵（HDD）、matchingID は ,,nid,eventId、番組名は送らない")
     func template() throws {
         let start = try #require(NasneDateTime.parse("2026-11-20T21:00:00+09:00"))
         var schedule = NewRecordSchedule(start: start, durationSeconds: 3600,
@@ -246,7 +246,10 @@ struct ScheduleCreationTests {
         let items = try XSRSItem.parseDocument(document, source: "test")
         #expect(items.count == 1 && items[0].id.isEmpty)
         schedule.desiredQualityMode = QualityMode.threeTimes
-        #expect(NasneProfiles.standard.xsrs.document(for: schedule).contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+        let threeTimes = NasneProfiles.standard.xsrs.document(for: schedule)
+        #expect(threeTimes.contains("<desiredQualityMode>230</desiredQualityMode>"))
+        #expect(threeTimes.contains("<recordDestinationID>HDD</recordDestinationID>"))
+        #expect(!threeTimes.contains("USBHDD"))
     }
 
     @Test("競合の確認は重なる予約を読み、作成は応答の 0x を外した ID を返す")
@@ -378,10 +381,9 @@ struct ScheduleCreationTests {
         #expect(draft.start == start)
         #expect(draft.durationSeconds == 3_330)   // 分に丸めない
         #expect(draft.channel.serviceID == 0x4010)
-        let xsrs = NasneProfiles.standard.xsrs
-        #expect(xsrs.destination(forQuality: draft.desiredQualityMode) == "HDD")
+        #expect(draft.desiredQualityMode == QualityMode.dr)
         model.qualityMode = QualityMode.threeTimes
-        #expect(model.draft.map { xsrs.destination(forQuality: $0.desiredQualityMode) } == "USBHDD")
+        #expect(model.draft?.desiredQualityMode == QualityMode.threeTimes)
 
         let ended = ScheduleCreationModel(program: program, service: FixedSchedules(), now: { creationNow.addingTimeInterval(3_000) })
         #expect(ended.validationMessage == "番組が終わっています")
@@ -409,7 +411,7 @@ struct ScheduleCreationTests {
 @MainActor
 @Suite("予約の変更・削除")
 struct ScheduleWriteTests {
-    @Test("画質の変更は疎な更新：priorityFlag は今の値、画質と組の録画先だけ。変える項目が無ければ送らない")
+    @Test("画質の変更は疎な更新：priorityFlag は今の値、画質と録画先（内蔵）だけ。変える項目が無ければ送らない")
     func qualityUpdateShape() async throws {
         let original = try #require(try schedules([scheduleItem(id: 5, start: "2026-11-21T21:00:00+09:00")]).first)
         let update = ScheduleUpdate.quality(QualityMode.threeTimes, of: original)
@@ -417,7 +419,7 @@ struct ScheduleWriteTests {
         #expect(document.contains(#"<item id="5">"#))
         #expect(document.contains("<desiredQualityMode>230</desiredQualityMode>"))
         #expect(document.contains("<priorityFlag>0</priorityFlag>"))
-        #expect(document.contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+        #expect(document.contains("<recordDestinationID>HDD</recordDestinationID>"))
         #expect(!document.contains("scheduledStartDateTime"))
         #expect(!document.contains("scheduledConditionID"))
 

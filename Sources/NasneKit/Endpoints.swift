@@ -309,15 +309,9 @@ public struct XSRSRequestVocabulary: Sendable {
     public let programMatchingType: String
     /// torne のひな形の作り手の値
     public let torneCreatorID: String
-    /// 画質（アプリの中の値）→ 録画先（DR = HDD・3 倍 = USBHDD。torne のひな形と同じ）
-    public let destinationsByQuality: [Int: String]
-    /// 表に無い画質のときの録画先
-    public let defaultDestination: String
-
-    /// 画質と組で送る録画先
-    public func destination(forQuality mode: Int) -> String {
-        destinationsByQuality[mode] ?? defaultDestination
-    }
+    /// 予約で送る録画先（画質によらず内蔵の HDD）。録画はこの値の HDD に入る（torne mobile HB 1.4.4 の実測）。
+    /// torne のひな形は 3 倍で外付け（USBHDD）を送るが、外付けに入った録画は一覧に出ない・再生できないことがあるので送らない
+    public let recordDestination: String
 
     /// 作る予約の文書（item の id は空。日時は `+09:00` のコロン形。番組名の要素は無い）
     public func document(for schedule: NewRecordSchedule) -> String {
@@ -333,13 +327,13 @@ public struct XSRSRequestVocabulary: Sendable {
             #"<desiredMatchingID type="\#(programMatchingType)">"# + "\(schedule.desiredMatchingID)</desiredMatchingID>",
             "<reservationCreatorID>\(XMLTree.escapeText(schedule.reservationCreatorID ?? torneCreatorID))</reservationCreatorID>",
             "<priorityFlag>\(schedule.priorityFlag)</priorityFlag>",
-            "<recordDestinationID>\(XMLTree.escapeText(destination(forQuality: schedule.desiredQualityMode)))</recordDestinationID>",
+            "<recordDestinationID>\(XMLTree.escapeText(recordDestination))</recordDestinationID>",
             "</item>",
         ]
         return wrap(elements.joined(separator: Self.creationElementSeparator))
     }
 
-    /// 疎な更新の文書（変える項目と priorityFlag だけ。並びは torne mobile HB と同じ。画質を変えるときは組の録画先も送る）
+    /// 疎な更新の文書（変える項目と priorityFlag だけ。並びは torne mobile HB と同じ。画質を変えるときは録画先も送る）
     public func document(for update: ScheduleUpdate) -> String {
         var item = #"<item id="\#(XMLTree.escapeAttribute(update.id))">"#
         if let conditionID = update.conditionID {
@@ -347,8 +341,8 @@ public struct XSRSRequestVocabulary: Sendable {
         }
         if let mode = update.desiredQualityMode { item += "<desiredQualityMode>\(mode)</desiredQualityMode>" }
         item += "<priorityFlag>\(update.priorityFlag)</priorityFlag>"
-        if let mode = update.desiredQualityMode {
-            item += "<recordDestinationID>\(XMLTree.escapeText(destination(forQuality: mode)))</recordDestinationID>"
+        if update.desiredQualityMode != nil {
+            item += "<recordDestinationID>\(XMLTree.escapeText(recordDestination))</recordDestinationID>"
         }
         item += "</item>"
         return wrap(item)
@@ -366,6 +360,5 @@ public struct XSRSRequestVocabulary: Sendable {
         namespace: "urn:schemas-xsrs-org:metadata-1-0/x_srs/",
         programMatchingType: "SI_PROGRAMID",
         torneCreatorID: "2000",
-        destinationsByQuality: [QualityMode.dr: "HDD", QualityMode.threeTimes: "USBHDD"],
-        defaultDestination: "HDD")
+        recordDestination: "HDD")
 }

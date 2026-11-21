@@ -182,7 +182,7 @@ struct ScheduleRow: View {
 }
 
 /// 予約の詳細。録画先（recordDestinationID）は出さない：予約では作り手の望む値で、
-/// 実際の録画先と食い違うことがある（torne の 3 倍の予約は USBHDD でも、本体の HDD に録られる。torne mobile HB と同じ扱い）
+/// 別のアプリで作った予約では実際の録画先と食い違うことがある（torne mobile HB と同じ扱い）
 struct ScheduleDetailView: View {
     let schedule: RecordSchedule
     let channelName: String

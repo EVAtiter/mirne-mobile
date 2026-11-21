@@ -14,6 +14,7 @@ struct ErrorTextTests {
             .soapFault(errorCode: "830", errorDescription: nil, source: "t"),
             .soapFault(errorCode: "836", errorDescription: nil, source: "t"),
             .soapFault(errorCode: "501", errorDescription: nil, source: "t"),
+            .titleProtected(from: .soapFault(errorCode: "877", errorDescription: nil, source: "t")),
             .parse("t", "d"), .validation("t", "d"), .unsupported("t"),
         ]
         for error in errors {
