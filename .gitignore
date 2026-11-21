@@ -1,0 +1,38 @@
+# ── ビルド成果物（xcodegen で再生成できるものを含む） ──
+build/
+*.xcodeproj/
+*.app
+*.zip
+*.dSYM/
+*.xcarchive/
+
+# ── 手元の開発環境 ──
+# 署名チーム・証明書名は Config/Local.xcconfig に置く（雛形は Local.xcconfig.example）
+Config/Local.xcconfig
+# 漏れの検査で探す個人の情報のパターン
+.leakcheck.local
+.claude/
+.vscode/
+.idea/
+*.xcuserstate
+xcuserdata/
+docs/private/
+
+# ── 鍵と資格情報（リポジトリの中に置かない。ここは置き間違えたときの備え） ──
+*.pem
+*.p12
+*.key
+*.der
+*.dtcp
+credentials*.env
+credentials/
+
+# ── 放送の素材・機器から取った応答（著作物であり、居住地域や機器の固有値も分かる） ──
+fixtures/private/
+*.ts
+*.m2ts
+*.tlv
+*.mts
+
+# ── macOS ──
+.DS_Store

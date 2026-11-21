@@ -1,0 +1,246 @@
+// torne mobile HB（MIT、© mar1mo-41414）の lib/core/models/device.dart・channel.dart・live_status.dart と
+// services/device_info.dart を Swift へ移植したもの。
+
+import Foundation
+
+/// 本体の情報（`status/*Get` の読み取りをまとめたもの）
+public struct DeviceInfo: Sendable, Equatable {
+    public var name: String
+    /// 生の版（例：`0260`）。表示は `displaySoftwareVersion`
+    public var softwareVersion: String
+    /// 生の時刻の文字列（ISO 形式）
+    public var currentDate: String?
+    public var areaIdentifierCode: Int?
+    public var pref: Int?
+    public var finishedSetup: Bool
+    public var updateExists: Bool
+
+    /// 公式の表示（「2.60」）に直した版。4 桁の数でなければ生のまま（plan.md §18.2）
+    public var displaySoftwareVersion: String {
+        guard softwareVersion.count == 4, let number = Int(softwareVersion) else { return softwareVersion }
+        return String(format: "%d.%02d", number / 100, number % 100)
+    }
+}
+
+/// `status/HDDListGet` の 1 台
+public struct HDDEntry: Sendable, Equatable {
+    public var id: Int
+    public var isInternal: Bool
+    public var isMounted: Bool
+    public var isRegistered: Bool
+}
+
+/// `status/HDDInfoGet`（大きさはバイト）。serialNumber は機器を特定できるので持たない
+public struct HDDInfo: Sendable, Equatable {
+    public var id: Int
+    public var isInternal: Bool
+    public var format: String
+    public var name: String
+    public var usedBytes: Int64
+    public var freeBytes: Int64
+    public var totalBytes: Int64
+}
+
+/// `status/channelListGet` の 1 局
+public struct Channel: Sendable, Equatable, Hashable {
+    /// WebAPI の数の broadcastingType（地上 = 2）
+    public var broadcastingType: Int
+    public var networkID: Int
+    public var transportStreamID: Int
+    public var serviceID: Int
+    public var serviceType: Int
+    public var channelNumber: Int
+    public var serviceName: String
+    public var remoteControlKeyID: Int?
+
+    /// TV サービスの serviceType（ARIB）
+    public static let televisionServiceType = 1
+
+    /// リモコンキー（1〜12）。nasne はサブチャンネルなどキーの無い局を 0 で返すので、0 は nil にする
+    public var remoteControlKey: Int? {
+        guard let remoteControlKeyID, remoteControlKeyID > 0 else { return nil }
+        return remoteControlKeyID
+    }
+
+    /// xsrs の書き方（`0x%04x`）
+    public var serviceIDHex: String { String(format: "0x%04x", serviceID) }
+
+    /// `source` は誤りの出どころ（読んだエンドポイント）
+    init(json: JSONObject, broadcastingType: Int, source: String) throws {
+        self.broadcastingType = broadcastingType
+        networkID = try json.requiredInt("networkId", source: source)
+        transportStreamID = try json.requiredInt("transportStreamId", source: source)
+        serviceID = try json.requiredInt("serviceId", source: source)
+        serviceType = try json.requiredInt("serviceType", source: source)
+        channelNumber = try json.requiredInt("channelNumber", source: source)
+        serviceName = BroadcastText.normalize(json.string("serviceName") ?? "")
+        remoteControlKeyID = json.int("remoteControlKeyId")
+    }
+
+    public init(broadcastingType: Int, networkID: Int, transportStreamID: Int, serviceID: Int, serviceType: Int,
+                channelNumber: Int, serviceName: String, remoteControlKeyID: Int? = nil) {
+        self.broadcastingType = broadcastingType
+        self.networkID = networkID
+        self.transportStreamID = transportStreamID
+        self.serviceID = serviceID
+        self.serviceType = serviceType
+        self.channelNumber = channelNumber
+        self.serviceName = serviceName
+        self.remoteControlKeyID = remoteControlKeyID
+    }
+
+    /// サブチャンネルの serviceID の集合（plan.md §25.3）。
+    /// 同じ (networkID, transportStreamID) の中で、TV サービスのうち最小の serviceID を本チャンネル、
+    /// 残りの TV サービスをサブとする。`branchNumber` は全件 0、局名の末尾の数字は本とサブで同名の局があるので使えない。
+    /// TV サービスでないもの（臨時・データなど）はどちらにも入れない
+    public static func subchannelServiceIDs(_ channels: [Channel]) -> Set<Int> {
+        var groups: [[Int]: [Int]] = [:]
+        for channel in channels where channel.serviceType == televisionServiceType {
+            groups[[channel.networkID, channel.transportStreamID], default: []].append(channel.serviceID)
+        }
+        var result = Set<Int>()
+        for serviceIDs in groups.values {
+            let main = serviceIDs.min()
+            for id in serviceIDs where id != main { result.insert(id) }
+        }
+        return result
+    }
+}
+
+/// 集約ステータス（`status/liveStreamStatusListGet`）の 1 項目。generation と生の中身を持つ
+public struct LiveSection: Sendable {
+    public var generation: Int?
+    public var raw: JSONObject
+}
+
+/// 集約ステータス。中身の形が実測で固まっていない項目（EIT_PF など）は生のまま持つ
+public struct LiveStatus: Sendable {
+    public var sections: [String: LiveSection]
+
+    init(json: JSONObject) {
+        var sections: [String: LiveSection] = [:]
+        for key in json.values.keys where key != "errorcode" {
+            if let object = json.object(key) {
+                sections[key] = LiveSection(generation: object.int("generation"), raw: object)
+            }
+        }
+        self.sections = sections
+    }
+
+    /// チューナーが選局中か（`tuningStatus.status`）。値の意味は未確定なので、0 以外を選局中と読む（推測）
+    public var tuningStatus: Int? { sections["tuningStatus"]?.raw.int("status") }
+
+    /// CA のお知らせ（`CAMsg`。中身が無いときは generation だけなので空）
+    public var caMessages: [String] { messages(of: "CAMsg") }
+    /// EMM のお知らせ（`EMMMsg`）
+    public var emmMessages: [String] { messages(of: "EMMMsg") }
+
+    /// 項目の中の文字列を全部集める（generation を除く。中身の形が実測で固まっていないので、
+    /// 入れ子の配列・オブジェクトもたどる。torne mobile HB の `_messagesOf` と同じ）
+    func messages(of name: String) -> [String] {
+        guard let raw = sections[name]?.raw else { return [] }
+        var out: [String] = []
+        func collect(_ value: Any) {
+            switch value {
+            case let text as String: if !text.isEmpty { out.append(BroadcastText.normalize(text)) }
+            case let array as [Any]: array.forEach(collect)
+            case let object as [String: Any]: object.keys.sorted().forEach { collect(object[$0]!) }
+            default: break
+            }
+        }
+        for key in raw.values.keys.sorted() where key != "generation" { collect(raw.values[key]!) }
+        return out
+    }
+}
+
+/// 録画の失敗（`status/recNgListGet`）の 1 件
+public struct RecNgItem: Sendable, Equatable {
+    public var id: String
+    public var title: String
+    public var start: Date?
+    public var durationSeconds: Int?
+    public var serviceID: Int?
+}
+
+/// 本体の情報を読む（WebAPI の GET。認証なし）
+public struct WebAPIDeviceInfoService: Sendable {
+    private let transport: WebAPITransport
+
+    public init(transport: WebAPITransport) {
+        self.transport = transport
+    }
+
+    /// エンドポイントの表（転送層の機器の表）
+    private var endpoints: WebAPIEndpointTable { transport.endpoints }
+
+    public func deviceInfo() async throws -> DeviceInfo {
+        let name = try await transport.getJSON(endpoints.boxNameGet)
+        let version = try await transport.getJSON(endpoints.softwareVersionGet)
+        let date = try await transport.getJSON(endpoints.currDateGet)
+        let area = try await transport.getJSON(endpoints.areaInfoGet)
+        let setup = try await transport.getJSON(endpoints.isFinishSetup)
+        let update = try await transport.getJSON(endpoints.updateCheck)
+        return DeviceInfo(name: name.string("name") ?? "", softwareVersion: version.string("softwareVersion") ?? "",
+                          currentDate: date.string("currDate"), areaIdentifierCode: area.int("areaIdentifierCode"),
+                          pref: area.int("pref"), finishedSetup: setup.flag("finishSetUpFlag"),
+                          updateExists: update.flag("existFlag"))
+    }
+
+    /// 内蔵の HDD か。**`internalFlag` は名前と逆で、内蔵が 0・外付けが 1**（torne mobile HB §89.8 の SIE 製の実測〔内蔵 id 0 が 0・
+    /// 外付け id 1 が 1〕と、こちらの Buffalo 製〔内蔵だけで 0。2026-11-21 に「情報」の画面が「外付け HDD」と出て分かった〕が合う）
+    static func isInternalDisk(_ hdd: JSONObject) -> Bool {
+        !hdd.flag("internalFlag")
+    }
+
+    public func hddList() async throws -> [HDDEntry] {
+        let json = try await transport.getJSON(endpoints.hddListGet)
+        let source = "webapi:\(endpoints.hddListGet.path)"
+        return try json.objects("HDD").map {
+            HDDEntry(id: try $0.requiredInt("id", source: source), isInternal: Self.isInternalDisk($0),
+                     isMounted: ($0.int("mountStatus") ?? 0) != 0, isRegistered: $0.flag("registerFlag"))
+        }
+    }
+
+    public func hddInfo(id: Int) async throws -> HDDInfo {
+        let json = try await transport.getJSON(endpoints.hddInfoGet, parameters: [endpoints.parameters.hddID: String(id)])
+        let source = "webapi:\(endpoints.hddInfoGet.path)"
+        guard let hdd = json.object("HDD") else { throw NasneError.parse(source, "\"HDD\" が無い") }
+        func bytes(_ key: String) throws -> Int64 {
+            guard let number = hdd.values[key] as? NSNumber else { throw NasneError.parse(source, "\"\(key)\" が無い") }
+            return number.int64Value
+        }
+        return HDDInfo(id: try hdd.requiredInt("id", source: source), isInternal: Self.isInternalDisk(hdd),
+                       format: hdd.string("format") ?? "", name: hdd.string("name") ?? "",
+                       usedBytes: try bytes("usedVolumeSize"), freeBytes: try bytes("freeVolumeSize"),
+                       totalBytes: try bytes("totalVolumeSize"))
+    }
+
+    public func channels(broadcastingType: Int = BroadcastingType.terrestrial) async throws -> [Channel] {
+        let endpoint = endpoints.channelListGet
+        let json = try await transport.getJSON(endpoint, parameters: [endpoints.parameters.broadcastingType: String(broadcastingType)])
+        return try json.objects("channel").map {
+            try Channel(json: $0, broadcastingType: broadcastingType, source: "webapi:\(endpoint.path)")
+        }
+    }
+
+    public func liveStatus() async throws -> LiveStatus {
+        LiveStatus(json: try await transport.getJSON(endpoints.liveStreamStatusListGet))
+    }
+
+    public func recNgList() async throws -> [RecNgItem] {
+        let json = try await transport.getJSON(endpoints.recNgListGet)
+        return json.objects("item").map {
+            RecNgItem(id: $0.string("id") ?? "", title: BroadcastText.normalize($0.string("title") ?? ""),
+                      start: NasneDateTime.parse($0.string("scheduledStartDateTime")),
+                      durationSeconds: $0.int("scheduledDuration"), serviceID: $0.int("scheduledChannelID"))
+        }
+    }
+
+    /// 録画の件数と上限
+    public func titleCounts() async throws -> (count: Int, max: Int) {
+        let count = try await transport.getJSON(endpoints.recordedContentCountGet)
+        let max = try await transport.getJSON(endpoints.recordedContentMaxCountGet)
+        let source = "webapi:/recorded"
+        return (try count.requiredInt("count", source: source), try max.requiredInt("count", source: source))
+    }
+}

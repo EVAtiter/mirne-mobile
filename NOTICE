@@ -1,0 +1,138 @@
+mirne mobile
+Copyright 2026 EVA Titer
+
+This product includes software derived from mirne
+(https://github.com/EVAtiter/mirne), Copyright 2026 EVA Titer,
+licensed under the Apache License, Version 2.0.
+
+  - Sources/SI/ARIBString.swift
+  - Sources/SI/ARIBTables.swift
+  - Sources/SI/BroadcastInformation.swift
+  - Sources/SI/Caption.swift
+  - Sources/SI/CaptionPieces.swift
+  - Sources/SI/EPGStore.swift
+  - Sources/SI/EventInformation.swift
+  - Sources/SI/ProgramDisplay.swift
+  - Sources/SI/ProgramGuide.swift
+  - Sources/SI/SQLiteDatabase.swift   (SQLite helpers taken out of EPGStore.swift)
+  - Sources/TSPipeline/TSDemuxer.swift
+  - Sources/TSPipeline/TSPacketCounter.swift
+  - Sources/Player/AACDecoder.swift
+  - Sources/Player/AudioSelection.swift
+  - Sources/Player/CaptionStyle.swift
+  - Sources/Player/CaptionTimeline.swift
+  - Sources/Player/FrameQueue.swift
+  - Sources/Player/MetalShaderSource.swift
+  - Sources/Player/MPEG2Video.swift
+  - Sources/Player/PlayerEngine.swift
+  - Sources/Player/VideoRenderer.swift
+  - Sources/Presentation/CaptionOverlayTiming.swift   (taken out of CaptionOverlay.swift)
+  - Sources/Presentation/ViewerWindowPositioning.swift
+  - Sources/Presentation/WindowPlacement.swift
+  - Sources/App/CaptionOverlay.swift
+  - Sources/App/GuideGenre.swift
+  - Sources/App/GuideView.swift
+  - Sources/App/SettingsNote.swift
+  - Sources/App/ViewerWindowController.swift   (in part)
+  - Sources/App/WindowPlacementController.swift   (in part)
+  - Tests/mirneMobileTests/AACFramingTests.swift
+  - Tests/mirneMobileTests/AudioSelectionTests.swift
+  - Tests/mirneMobileTests/BroadcastInformationTests.swift
+  - Tests/mirneMobileTests/CaptionStyleTests.swift
+  - Tests/mirneMobileTests/CaptionTests.swift
+  - Tests/mirneMobileTests/CaptionTimelineTests.swift
+  - Tests/mirneMobileTests/DualMonoTests.swift
+  - Tests/mirneMobileTests/EPGStoreTests.swift
+  - Tests/mirneMobileTests/FrameQueueTests.swift
+  - Tests/mirneMobileTests/ProgramGuideTests.swift
+  - build.sh, scripts/notarize.sh, scripts/check-binary.sh, scripts/make-icon.sh,
+    scripts/make-icon.swift, scripts/area-downscale.swift, Config/Base.xcconfig,
+    Config/Local.xcconfig.example
+
+Some of those files are in turn derived from coax
+(https://github.com/Till0196/coax), Copyright 2026 Till0196,
+licensed under the Apache License, Version 2.0.
+
+  - Sources/SI/ARIBString.swift   (from pkg/isdb/decode.go, charset.go, control.go)
+  - Sources/SI/ARIBTables.swift   (from pkg/isdb/tables.go)
+  - Sources/SI/CaptionPieces.swift   (from pkg/isdb/pieces.go)
+  - Sources/SI/Caption.swift   (from pkg/isdb/caption/caption.go)
+  - Tests/mirneMobileTests/CaptionTests.swift   (from pkg/isdb/caption/caption_test.go, pkg/isdb/pieces_test.go)
+
+This product includes software derived from torne mobile HomeBrew edition
+(https://github.com/mar1mo-41414/TorneMobileHomeBrew), Copyright (c) 2026 mar1mo-41414,
+licensed under the MIT License (full text below).
+
+  - Sources/NasneKit/BroadcastText.swift
+  - Sources/NasneKit/DeviceInfo.swift
+  - Sources/NasneKit/Discovery.swift
+  - Sources/NasneKit/Endpoints.swift
+  - Sources/NasneKit/EPGFetch.swift
+  - Sources/NasneKit/JSONObject.swift
+  - Sources/NasneKit/Live.swift
+  - Sources/NasneKit/NasneDevice.swift
+  - Sources/NasneKit/NasneError.swift
+  - Sources/NasneKit/Recordings.swift
+  - Sources/NasneKit/Services.swift
+  - Sources/NasneKit/SOAPTransport.swift
+  - Sources/NasneKit/TokenProvider.swift
+  - Sources/NasneKit/WebAPITransport.swift
+  - Sources/DTCPKit/AKEClient.swift
+  - Sources/DTCPKit/AKEConnection.swift
+  - Sources/DTCPKit/AKEControlFrame.swift
+  - Sources/DTCPKit/DTCPAES.swift
+  - Sources/DTCPKit/DTCPContentHTTP.swift
+  - Sources/DTCPKit/DTCPCredentials.swift
+  - Sources/DTCPKit/DTCPCredentialStore.swift
+  - Sources/DTCPKit/DTCPCurve.swift
+  - Sources/DTCPKit/DTCPError.swift
+  - Sources/DTCPKit/DTCPKeySource.swift
+  - Sources/DTCPKit/DTCPSRM.swift
+  - Sources/DTCPKit/PCPDecryptor.swift
+  - Sources/Presentation/AreaNames.swift   (from lib/ui/format.dart)
+  - Tests/mirneMobileTests/AKETests.swift
+  - Tests/mirneMobileTests/DTCPCryptoTests.swift
+  - Tests/mirneMobileTests/DTCPStreamingTests.swift
+  - Tests/mirneMobileTests/DTCPTestVectors.swift
+  - Tests/mirneMobileTests/NasneKitTests.swift
+  - Tests/mirneMobileTests/NasneTestSupport.swift
+  - Tests/mirneMobileTests/Fixtures/dlna, Fixtures/soap, Fixtures/webapi, Fixtures/upnp_description.xml
+      (device responses masked by torne mobile HomeBrew edition;
+       station names, broadcaster IDs and region codes replaced with fictitious values)
+
+The DTCP-IP parts of those files are in turn derived from pydtcpip
+(https://github.com/tsukumijima/pydtcpip), Copyright (c) 2026 tsukumi, licensed under the MIT License.
+
+  - Sources/DTCPKit/AKEClient.swift
+  - Sources/DTCPKit/AKEConnection.swift
+  - Sources/DTCPKit/AKEControlFrame.swift
+  - Sources/DTCPKit/DTCPAES.swift
+  - Sources/DTCPKit/DTCPCredentials.swift
+  - Sources/DTCPKit/DTCPCurve.swift
+  - Sources/DTCPKit/DTCPSRM.swift
+  - Sources/DTCPKit/PCPDecryptor.swift
+  - Tests/mirneMobileTests/AKETests.swift
+  - Tests/mirneMobileTests/DTCPTestVectors.swift
+
+MIT License
+
+Copyright (c) 2026 mar1mo-41414
+Copyright (c) 2026 tsukumi (pydtcpip)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

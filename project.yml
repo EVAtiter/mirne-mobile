@@ -1,0 +1,136 @@
+name: mirne-mobile
+
+# 署名チームと証明書名はここに書かない。
+# Config/Base.xcconfig が既定（アドホック署名）を決め、手元の Config/Local.xcconfig で上書きする。
+
+options:
+  bundleIdPrefix: com.slack-kingdom
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "27"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    # arm64 専用ビルド（共通ルールの方針）
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    # 版とビルド番号はここだけに書く（Info.plist は $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) で参照する）
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "7"
+  configs:
+    # xcodegen は #if DEBUG 用の DEBUG を自動定義しないので明示する
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    # build アクションの Release でもシンボルを削る（archive は既定で削る）。
+    # 削らないと、デバッグ用のシンボル情報に手元のパス（ユーザー名を含む）が残る
+    Release:
+      DEPLOYMENT_POSTPROCESSING: YES
+
+# アプリ・計測用のコマンド・単体試験が共通で取り込むソース。
+# NasneKit（nasne との通信）と DTCPKit（DTCP-IP）は中身ができるまで無いので optional にしてある
+targetTemplates:
+  CoreSources:
+    sources:
+      - path: Sources/NasneKit
+        optional: true
+      - path: Sources/DTCPKit
+        optional: true
+      - path: Sources/TSPipeline
+      - path: Sources/SI
+      - path: Sources/Player
+      # 画面に出す形への変換（誤りの文言など）。AppKit・SwiftUI に依存させない
+      - path: Sources/Presentation
+      # 録画の再生（DTCPKit と再生系をつなぐ。AppKit に依存させない）
+      - path: Sources/Playback
+
+targets:
+  mirne-mobile:
+    type: application
+    platform: macOS
+    templates:
+      - CoreSources
+    sources:
+      - path: Sources/App
+        excludes:
+          - "**/.DS_Store"
+          # Info.plist は INFOPLIST_FILE で参照するのでリソースコピーから外す
+          - "Info.plist"
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
+    settings:
+      base:
+        # Finder に出る名前（mirne mobile.app）。モジュール名は mirne_mobile になる
+        PRODUCT_NAME: mirne mobile
+        PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirne-mobile
+        INFOPLIST_FILE: Sources/App/Info.plist
+        # アプリアイコン（Sources/App/Assets.xcassets。scripts/make-icon.sh で作る。macOS 27 は icns だけだと小さい表示を灰色の箱に入れる）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # TTL を設定した生のソケット（DTCP-IP の AKE）とローカルネットワークのため App Sandbox は使わない
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        SKIP_INSTALL: NO
+
+  # 計測用のコマンド。配布物には含めない
+  mirne-mobile-probe:
+    type: tool
+    platform: macOS
+    templates:
+      - CoreSources
+    sources:
+      - path: Sources/Probe
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: mirne-mobile-probe
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+
+  # 単体試験。アプリには載せず、試験するソースを直接取り込む
+  mirneMobileTests:
+    type: bundle.unit-test
+    platform: macOS
+    templates:
+      - CoreSources
+    sources:
+      - path: Tests/mirneMobileTests
+        excludes:
+          - "Info.plist"
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: mirneMobileTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirneMobileTests
+        INFOPLIST_FILE: Tests/mirneMobileTests/Info.plist
+
+schemes:
+  mirne-mobile:
+    build:
+      targets:
+        mirne-mobile: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - mirneMobileTests
+    archive:
+      config: Release
+  mirne-mobile-probe:
+    build:
+      targets:
+        mirne-mobile-probe: all
+    run:
+      config: Debug

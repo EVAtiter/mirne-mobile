@@ -1,0 +1,131 @@
+import SwiftUI
+
+/// 主ウインドウの各画面の上の帯。番組表の帯（`GuideToolbar`）と同じ位置・寸法で、左に画面の操作、右端に「更新」を置く。
+///
+/// 前は「更新」をツールバーの右端（「設定」の右）に、録画の検索・絞り込みと予約の「新規予約」を一覧の上の帯に置いていたが、
+/// 番組表だけ「更新」が画面の上の帯にあって揃っていなかった。番組表に合わせて、予約・録画・情報にも同じ帯を置き、
+/// 「更新」と画面の操作をそこに集めた（2026-11-21）。ツールバーには「ライブ」・切り替え・「設定」だけが残る
+struct ScreenActionBar<Leading: View>: View {
+    /// 「更新」のボタンの説明（マウスを載せると出す）
+    let refreshHelp: String
+    /// 取り直している間は「更新」を押せない
+    let isRefreshing: Bool
+    let refresh: () -> Void
+    /// 「更新」の左に出す一覧の状態（録画の件数と取得日時。番組表の「… に更新」と同じ位置。窓が狭くて入らなければ出さない）
+    var status: String? = nil
+    @ViewBuilder let leading: Leading
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScreenActionBarRow(spacing: ScreenActionBarLayout.spacing) {
+                leading
+                BarStatusText(text: status ?? "")
+                ScreenRefreshButton(help: refreshHelp, isRefreshing: isRefreshing, action: refresh)
+            }
+            .padding(.horizontal, ScreenActionBarLayout.horizontalPadding)
+            .padding(.vertical, ScreenActionBarLayout.verticalPadding)
+            Divider()
+        }
+    }
+}
+
+/// 帯の状態の文字（録画の件数と取得日時・番組表の「… に更新」）。帯のボタンの文字と同じ大きさにする（2026-11-21）。
+/// ボタンの文字は主ウインドウの文字の倍率がかからず、部品の大きさ（「標準」は regular・「大きい」は large）の macOS の文字の大きさで描かれる。
+/// 前は倍率をかけた callout で、ボタンの文字より大きく見えた
+struct BarStatusText: View {
+    let text: String
+    @Environment(\.controlSize) private var controlSize
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: NSFont.systemFontSize(for: Self.appKitSize(controlSize))))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+
+    /// SwiftUI の部品の大きさを AppKit の大きさへ
+    static func appKitSize(_ size: ControlSize) -> NSControl.ControlSize {
+        switch size {
+        case .mini: .mini
+        case .small: .small
+        // extraLarge は macOS 26 から（最低の版は 15）なので large として扱う
+        case .large, .extraLarge: .large
+        default: .regular
+        }
+    }
+}
+
+/// 帯の「更新」（絵だけ。⌘R は表示のメニューの「更新」が受け持つ）
+struct ScreenRefreshButton: View {
+    let help: String
+    let isRefreshing: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button("更新", systemImage: "arrow.clockwise", action: action)
+            .labelStyle(.iconOnly)
+            .disabled(isRefreshing)
+            .help(help)
+    }
+}
+
+/// 帯の 1 段の並べ方（左の操作・一覧の状態・「更新」。左の操作は無いこともある）。左の操作は左に寄せ、一覧の状態と「更新」は右に寄せる。
+/// 一覧の状態は、左の操作が本来の幅で入り、さらに一覧の状態も入るときだけ出す（入らなければ出さない。2026-11-21）。
+/// `ViewThatFits` で包む形では、左の操作が縮める分を数えずに決めるので、最小の窓でも一覧の状態が残って帯がはみ出した
+struct ScreenActionBarRow: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let height = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+        let width = proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        // 後ろの 2 つが一覧の状態と「更新」。左の操作が無い（EmptyView）ときは部品が 2 つになる（情報の画面）
+        guard subviews.count >= 2 else { return }
+        let refresh = subviews[subviews.count - 1]
+        let status = subviews[subviews.count - 2]
+        let leading = subviews.count >= 3 ? subviews[0] : nil
+        let refreshSize = refresh.sizeThatFits(.unspecified)
+        let statusSize = status.sizeThatFits(.unspecified)
+        // 左の操作の本来の幅は、十分に広い幅を渡して測る（.unspecified だと、中の ViewThatFits が詰めた形の幅を返し、
+        // 件数を出すために「番組名でまとめる」が絵だけになった。件数はいちばん後回し。2026-11-21）
+        let leadingIdeal = leading?.sizeThatFits(ProposedViewSize(width: .infinity, height: nil)).width ?? 0
+        // 「更新」は右端
+        let refreshOrigin = CGPoint(x: bounds.maxX - refreshSize.width, y: bounds.midY - refreshSize.height / 2)
+        refresh.place(at: refreshOrigin, proposal: ProposedViewSize(refreshSize))
+        var right = refreshOrigin.x - spacing
+        // 一覧の状態：左の操作が本来の幅で入るときだけ
+        let showsStatus = statusSize.width > 0 && leadingIdeal + spacing + statusSize.width + spacing <= right - bounds.minX
+        if showsStatus {
+            let origin = CGPoint(x: right - statusSize.width, y: bounds.midY - statusSize.height / 2)
+            status.place(at: origin, proposal: ProposedViewSize(statusSize))
+            right = origin.x - spacing
+        } else {
+            status.place(at: CGPoint(x: bounds.maxX, y: bounds.midY), proposal: .zero)
+        }
+        // 左の操作は残りの幅で（入らなければ左の操作が縮める・省く）
+        guard let leading else { return }
+        let available = max(0, right - bounds.minX)
+        let leadingSize = leading.sizeThatFits(ProposedViewSize(width: available, height: bounds.height))
+        leading.place(at: CGPoint(x: bounds.minX, y: bounds.midY - leadingSize.height / 2),
+                      proposal: ProposedViewSize(width: min(leadingSize.width, available), height: leadingSize.height))
+    }
+}
+
+/// 各画面の上の帯の寸法（番組表の帯と同じ値。番組表の帯もこれを使う）
+enum ScreenActionBarLayout {
+    /// 帯の中の部品の間
+    static let spacing: CGFloat = 12
+    static let horizontalPadding: CGFloat = 12
+    static let verticalPadding: CGFloat = 8
+}
+
+/// 録画と予約の画面の、一覧と詳細の欄の幅。詳細の欄は固定の幅、一覧は残りの幅（2026-11-21）
+enum DetailPaneLayout {
+    /// 詳細の欄の幅（前の仕切りの初めの幅と同じ値）
+    static let width: CGFloat = 360
+    /// 一覧の最小の幅（主ウインドウの最小の幅 640 に、詳細の欄と縦線が収まるように）
+    static let listMinimumWidth: CGFloat = 279
+}
