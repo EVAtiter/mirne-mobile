@@ -45,7 +45,10 @@ public struct WebAPITransport: Sendable {
         var components = URLComponents()
         components.scheme = "http"
         components.host = host
-        components.port = profile.ports.webAPI
+        switch endpoint.port {
+        case .webAPI: components.port = profile.ports.webAPI
+        case .recordingWrite: components.port = profile.ports.recordingWrite
+        }
         components.path = endpoint.path
         if !parameters.isEmpty {
             components.queryItems = parameters.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }

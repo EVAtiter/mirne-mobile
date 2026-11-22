@@ -1,8 +1,11 @@
 #!/bin/bash
 # アプリアイコンを作り直す。scripts/make-icon.swift で 1024px のマスターを描き、
-# Sources/App/Assets.xcassets/AppIcon.appiconset に 16〜512px の @1x/@2x の 10 枚（8-bit）を置く。
+# Sources/App/Assets.xcassets/AppIcon.appiconset に 16〜512px の @1x/@2x の 10 枚（8-bit）を置く（macOS 版）。
+# iPad 版は Sources/iOSApp/Assets.xcassets/AppIcon.appiconset に 1024px の 1 枚（透過なし・角丸なし）を置く。
 #
-#   scripts/make-icon.sh
+#   scripts/make-icon.sh          両方
+#   scripts/make-icon.sh macos    macOS 版だけ
+#   scripts/make-icon.sh ios      iPad 版だけ
 #
 # macOS 27 は icns だけ（CFBundleIconFile のみ）のアプリを 16/32px の表示で灰色の角丸の箱に入れるので、
 # Asset Catalog（CFBundleIconName = AppIcon）にする。icns は作らない（ビルドが Asset Catalog から副生成する）。
@@ -12,8 +15,32 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+TARGET="${1:-all}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# iPad 版：1024px の 1 枚だけ（iOS は Asset Catalog だけが経路で、角丸は OS が切り抜く）
+make_ios() {
+    local catalog=Sources/iOSApp/Assets.xcassets
+    local appicon="$catalog/AppIcon.appiconset"
+    rm -rf "$appicon"
+    mkdir -p "$appicon"
+    swift scripts/make-icon.swift "$appicon/AppIcon-1024.png" ios
+    python3 - "$catalog" "$appicon" <<'EOF'
+import json, sys
+catalog, appicon = sys.argv[1], sys.argv[2]
+info = {"author": "xcode", "version": 1}
+json.dump({"info": info}, open(f"{catalog}/Contents.json", "w"), indent=2)
+images = [{"filename": "AppIcon-1024.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}]
+json.dump({"images": images, "info": info}, open(f"{appicon}/Contents.json", "w"), indent=2)
+EOF
+    echo "アイコンを生成: $appicon"
+}
+
+if [ "$TARGET" = ios ]; then
+    make_ios
+    exit 0
+fi
 
 MASTER="$WORK/master.png"
 swift scripts/make-icon.swift "$MASTER" standard
@@ -44,3 +71,7 @@ json.dump({"images": images, "info": info}, open(f"{appicon}/Contents.json", "w"
 EOF
 
 echo "アイコンを生成: $APPICON"
+
+if [ "$TARGET" = all ]; then
+    make_ios
+fi

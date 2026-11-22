@@ -174,7 +174,7 @@ public final class PlaybackController: PlaybackService {
         pausedAt = .now
         state = .paused
         log("一時停止（\(Self.seconds(positionSeconds))）")
-        recordCheckpoint()
+        recordCheckpoint(.paused)
     }
 
     public func resume() {
@@ -289,7 +289,7 @@ public final class PlaybackController: PlaybackService {
     }
 
     public func stop() {
-        recordCheckpoint()
+        recordCheckpoint(.left)
         if state != .idle { log("止めた") }
         generation += 1
         resource = nil
@@ -315,7 +315,7 @@ public final class PlaybackController: PlaybackService {
         pausedAt = nil
         reconnectPosition = position
         state = .paused
-        recordCheckpoint()
+        recordCheckpoint(.left)
         log("スリープの前に受信と接続を閉じる（\(Self.seconds(position))。再開で張り直す）")
         enqueue { [weak self] in await self?.closeSessionKeepingPicture() }
     }
@@ -323,12 +323,12 @@ public final class PlaybackController: PlaybackService {
     /// いまの位置（始め直している間は頼んだ位置・最後までなら長さ）を止めどころとして知らせる。
     /// 始まる前・止めた後・失敗した後は知らせない。
     /// 録画中の録画は、長さを知らせない（終わり近くで止めても「見終わった」にしない。配信が本当に終わったら見終わった。2026-11-20）
-    public func recordCheckpoint() {
+    public func recordCheckpoint(_ occasion: PlaybackCheckpoint.Occasion = .periodic) {
         guard kind == .recording, hasStarted, resource != nil, let position = displaySeconds else { return }
         switch state {
         case .playing, .paused, .waiting, .starting, .ended:
             onCheckpoint?(PlaybackCheckpoint(position: position, duration: growth == nil ? durationSeconds : nil,
-                                             ended: state == .ended))
+                                             ended: state == .ended, occasion: occasion))
         case .idle, .failed:
             return
         }
@@ -475,7 +475,7 @@ public final class PlaybackController: PlaybackService {
             if state != .paused {
                 engine.pause()
                 state = .ended
-                recordCheckpoint()
+                recordCheckpoint(.left)
             }
             log("最後まで受け取った")
             monitor?.cancel()

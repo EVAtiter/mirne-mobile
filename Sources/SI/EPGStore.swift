@@ -19,6 +19,17 @@ public struct EPGCoverage: Sendable, Equatable {
     public var eventCount: Int
 }
 
+/// 局のロゴの鍵（放送の種類と serviceID。地上・BS・CS で serviceID が重なりうるので種類も入れる）
+public struct ChannelLogoKey: Sendable, Hashable {
+    public var broadcastingType: Int
+    public var serviceID: Int
+
+    public init(broadcastingType: Int, serviceID: Int) {
+        self.broadcastingType = broadcastingType
+        self.serviceID = serviceID
+    }
+}
+
 /// 番組表の保存先が使えない。
 public struct EPGStoreError: Error, LocalizedError {
     public let message: String
@@ -194,6 +205,40 @@ public final class EPGStore: @unchecked Sendable {
         }
     }
 
+    /// 局のロゴ（PNG）を、その放送の種類の分だけ丸ごと差し替えて保存する（書き込みは自分のキューで行い、待たせない）
+    public func saveLogos(_ logos: [Int: Data], broadcastingType: Int, receivedAt: Date) {
+        queue.async { [self] in
+            do {
+                try database.execute("BEGIN", [])
+                try database.execute("DELETE FROM logos WHERE broadcasting_type = ?", [.int(broadcastingType)])
+                for (serviceID, png) in logos {
+                    try database.execute("INSERT INTO logos (broadcasting_type, service_id, png, received) VALUES (?, ?, ?, ?)",
+                                         [.int(broadcastingType), .int(serviceID), .blob(png), .double(receivedAt.timeIntervalSince1970)],
+                                         reuse: true)
+                }
+                try database.execute("COMMIT", [])
+            } catch {
+                try? database.execute("ROLLBACK", [])
+                // 誤りの文面は番組表の保存と同じもの（ファイルの誤り。nasne の秘密は入らない）
+                Self.logger.error("局のロゴを保存できない: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// 保存した局のロゴ（読めなければ空）
+    public func logos() -> [ChannelLogoKey: Data] {
+        queue.sync {
+            var logos: [ChannelLogoKey: Data] = [:]
+            try? database.query("SELECT broadcasting_type, service_id, png FROM logos", []) { row in
+                let key = ChannelLogoKey(broadcastingType: Int(sqlite3_column_int(row, 0)), serviceID: Int(sqlite3_column_int(row, 1)))
+                let length = Int(sqlite3_column_bytes(row, 2))
+                guard length > 0, let bytes = sqlite3_column_blob(row, 2) else { return }
+                logos[key] = Data(bytes: bytes, count: length)
+            }
+            return logos
+        }
+    }
+
     /// 書き込みが終わるまで待つ（試験と終了時）
     public func flush() {
         queue.sync {}
@@ -235,6 +280,13 @@ public final class EPGStore: @unchecked Sendable {
                 CREATE TABLE IF NOT EXISTS services (
                     network_id INTEGER NOT NULL, transport_stream_id INTEGER NOT NULL, service_id INTEGER NOT NULL, last_received REAL NOT NULL,
                     PRIMARY KEY (network_id, transport_stream_id, service_id))
+                """, [])
+            // 局のロゴ（番組表の飾りと、録画・予約の一覧の行の頭に使う）。表を足すだけなので版は上げない
+            // （前の版の作りでも、この表が無ければここで作られる。番組の表を作り直すときもロゴは残る）
+            try database.execute("""
+                CREATE TABLE IF NOT EXISTS logos (
+                    broadcasting_type INTEGER NOT NULL, service_id INTEGER NOT NULL, png BLOB NOT NULL, received REAL NOT NULL,
+                    PRIMARY KEY (broadcasting_type, service_id))
                 """, [])
             try database.execute("PRAGMA user_version = \(Self.schemaVersion)", [])
         }

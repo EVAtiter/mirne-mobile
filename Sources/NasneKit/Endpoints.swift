@@ -37,7 +37,7 @@ public enum NasneProfiles {
         id: "nasne-base",
         modelNames: [NasneDevice.nasneModelName, NasneDevice.buffaloNasneModelName],
         verifiedFirmwareVersions: ["2.60", "4.50"],
-        ports: NasnePorts(webAPI: 64210, xsrs: 64230, dms: 58888, webVideo: 58890),
+        ports: NasnePorts(webAPI: 64210, recordingWrite: 64220, xsrs: 64230, dms: 58888, webVideo: 58890),
         webAPI: .base,
         soap: .base,
         dlna: .base,
@@ -67,6 +67,9 @@ public enum NasneProfiles {
 public struct NasnePorts: Sendable, Equatable {
     /// WebAPI（JSON・バイナリ）
     public let webAPI: Int
+    /// 録画の書き込みの系統の WebAPI（再開位置の書き戻し。応答に `X-AV-Server-Info` の見出しが付く別のサービス。
+    /// torne mobile HB 1.5.0 が SIE 製で測った。64210 では同じパスが 404）
+    public let recordingWrite: Int
     /// UPnP SOAP（X_ScheduledRecording・X_PvrControl）
     public let xsrs: Int
     /// DMS（デバイス記述・ContentDirectory）
@@ -81,6 +84,10 @@ public struct NasnePorts: Sendable, Equatable {
 /// 実測したのは地上だけ（WebAPI の broadcastingType=2、SOAP の "DTT"）
 public enum BroadcastingType {
     public static let terrestrial = 2
+    /// BS（局のロゴを `channelLogoDataGet` で取れることを 2026-11-22 に Buffalo 製で確かめた）
+    public static let bs = 3
+    /// 110 度 CS（同上）
+    public static let cs = 4
 }
 
 // MARK: - WebAPI
@@ -89,6 +96,12 @@ public enum BroadcastingType {
 public enum WebAPIResponseKind: Sendable {
     case json
     case binary
+}
+
+/// WebAPI のエンドポイントの待ち受けるポートの種類（番号は `NasnePorts`）
+public enum WebAPIPort: Sendable, Equatable {
+    case webAPI
+    case recordingWrite
 }
 
 /// WebAPI のエンドポイント 1 つ
@@ -101,14 +114,17 @@ public struct WebAPIEndpoint: Sendable, Equatable, CustomStringConvertible {
     /// X-DTVToken が要るか（POST の Set 系と EPGGet・PINVerify）
     public let requiresToken: Bool
     public let responseKind: WebAPIResponseKind
+    /// 待ち受けるポート（ほとんどは WebAPI の 64210）
+    public let port: WebAPIPort
 
     init(_ path: String, method: String = "GET", requiredParameters: [String] = [], requiresToken: Bool = false,
-         responseKind: WebAPIResponseKind = .json) {
+         responseKind: WebAPIResponseKind = .json, port: WebAPIPort = .webAPI) {
         self.path = path
         self.method = method
         self.requiredParameters = requiredParameters
         self.requiresToken = requiresToken
         self.responseKind = responseKind
+        self.port = port
     }
 
     public var description: String { "\(method) \(path)" }
@@ -120,6 +136,10 @@ public struct WebAPIParameterNames: Sendable {
     public let broadcastingType: String
     /// HDD の番号（`HDDInfoGet`）
     public let hddID: String
+    /// 録画の ID（`recordedContentResumePositionSet`。一覧の ID のまま）
+    public let titleID: String
+    /// 再開位置（`recordedContentResumePositionSet`。ミリ秒）
+    public let resumePosition: String
 }
 
 /// WebAPI のエンドポイントの表
@@ -156,13 +176,19 @@ public struct WebAPIEndpointTable: Sendable {
     /// 番組表（plan.md §24）。本文は専用のバイナリ形式、Content-Type は正確に `application/binary`、トークン必須
     public let epgGet: WebAPIEndpoint
 
+    // ── recorded：再開位置の書き戻し（POST・ポート 64220） ──
+    /// 録画の再開位置を書く。form で録画の ID と位置（ミリ秒）。nasne は秒に切り捨てて xsrs の `lastPlaybackTime` の
+    /// `resumePoint` に置き、受け付けるたびに `lastPlaybackTime` を打ち直す。負の位置は errorcode 803。
+    /// この口はトークンを検めない（torne mobile HB 1.5.0 が SIE 製で測った）ので付けない
+    public let recordedContentResumePositionSet: WebAPIEndpoint
+
     // ── config：検証（POST・トークン必須） ──
     /// 本文なしで送る。トークンが正しいこと自体が検証になる（PIN そのものは送らない）
     public let pinVerify: WebAPIEndpoint
 
     /// 最初に確かめた表
     static let base: WebAPIEndpointTable = {
-        let parameters = WebAPIParameterNames(broadcastingType: "broadcastingType", hddID: "id")
+        let parameters = WebAPIParameterNames(broadcastingType: "broadcastingType", hddID: "id", titleID: "id", resumePosition: "position")
         let byType = [parameters.broadcastingType]
         return WebAPIEndpointTable(
             parameters: parameters,
@@ -187,6 +213,9 @@ public struct WebAPIEndpointTable: Sendable {
             recordedContentMaxCountGet: WebAPIEndpoint("/recorded/recordedContentMaxCountGet"),
             channelLogoDataGet: WebAPIEndpoint("/chEpg/channelLogoDataGet", requiredParameters: byType, responseKind: .binary),
             epgGet: WebAPIEndpoint("/chEpg/EPGGet", method: "POST", requiresToken: true, responseKind: .binary),
+            recordedContentResumePositionSet: WebAPIEndpoint("/recorded/recordedContentResumePositionSet", method: "POST",
+                                                             requiredParameters: [parameters.titleID, parameters.resumePosition],
+                                                             port: .recordingWrite),
             pinVerify: WebAPIEndpoint("/config/PINVerify", method: "POST", requiresToken: true))
     }()
 }
@@ -227,6 +256,8 @@ public struct SOAPArgumentNames: Sendable {
     public let sortCriteria: String
     /// `Browse` で直下の子を読む値
     public let browseDirectChildren: String
+    /// `Browse` で 1 件だけ（ObjectID の item そのもの）を読む値（2026-11-22 に Buffalo 製で確かめた。1 件 約 30 ms）
+    public let browseMetadata: String
     /// すべての項目を返させる `Filter` の値
     public let allProperties: String
     /// あるだけ返させる `RequestedCount` の値（ただし 1 回に返す件数には上限がある）
@@ -254,6 +285,12 @@ public struct SOAPTable: Sendable {
     public var deleteRecordSchedule: SOAPAction { SOAPAction(service: scheduledRecording, name: "X_DeleteRecordSchedule") }
     /// 録画の削除（2026-11-21 に Buffalo 製で確かめた。入る引数は TitleID だけ・出る値なし）
     public var deleteTitle: SOAPAction { SOAPAction(service: scheduledRecording, name: "X_DeleteTitle") }
+    /// 録画の変更（保護の切り替えに使う。入る引数は Elements〔一覧の item を丸ごと〕・出る値は Result。torne mobile HB 1.5.0 が SIE 製で測った）
+    public var updateTitle: SOAPAction { SOAPAction(service: scheduledRecording, name: "X_UpdateTitle") }
+
+    // ── X_PvrControl ──
+    /// 録画のチャプター（入る引数は TitleID〔一覧の ID〕。2026-11-22 に Buffalo 製で確かめた）
+    public var getTitleInfo: SOAPAction { SOAPAction(service: pvrControl, name: "X_GetTitleInfo") }
 
     // ── ContentDirectory ──
     public var browse: SOAPAction { SOAPAction(service: contentDirectory, name: "Browse") }
@@ -261,8 +298,8 @@ public struct SOAPTable: Sendable {
     /// 記述が取れなかったときに、既定の control URL で作っておくサービス
     public var knownServices: [SOAPService] { [scheduledRecording, pvrControl, contentDirectory, connectionManager] }
 
-    /// 最初に確かめた表（X_PvrControl の X_GetFirmwareVersion・X_GetLiveChList・X_GetTitleInfo・
-    /// X_GetTitleDetail もあると分かっているが、使っていないのでアクションは載せない）
+    /// 最初に確かめた表（X_PvrControl の X_GetFirmwareVersion・X_GetLiveChList・X_GetTitleDetail もあると分かっているが、
+    /// 使っていないのでアクションは載せない）
     static let base = SOAPTable(
         scheduledRecording: SOAPService(serviceType: "urn:schemas-xsrs-org:service:X_ScheduledRecording:2",
                                         defaultPort: 64230,
@@ -277,7 +314,7 @@ public struct SOAPTable: Sendable {
             elements: "Elements", recordScheduleID: "RecordScheduleID", titleID: "TitleID",
             objectID: "ObjectID", browseFlag: "BrowseFlag", searchCriteria: "SearchCriteria", filter: "Filter",
             startingIndex: "StartingIndex", requestedCount: "RequestedCount", sortCriteria: "SortCriteria",
-            browseDirectChildren: "BrowseDirectChildren", allProperties: "*", requestAll: 0,
+            browseDirectChildren: "BrowseDirectChildren", browseMetadata: "BrowseMetadata", allProperties: "*", requestAll: 0,
             titleListRequestCount: 1000))
 }
 
@@ -287,6 +324,11 @@ public struct SOAPTable: Sendable {
 public struct DLNATable: Sendable {
     /// 全録画の入れ物
     public let allRecordingsContainer: String
+    /// 入れ物の中の録画 1 件の item の id の、録画の ID の前に付く部分（`0/video/all/pvr?id=<一覧の ID>`。
+    /// 2026-11-22 に Buffalo 製の 651 件すべてがこの形だった）
+    public var recordingItemPrefix: String { allRecordingsContainer + recordingItemSeparator }
+    /// 入れ物と録画の ID の間の部分
+    public let recordingItemSeparator: String
     /// ライブの木の根（直下が帯域の container）
     public let liveTunerContainer: String
     /// 放送の種別 → 帯域の container id の末尾（例：地上は `DTTB`）
@@ -295,6 +337,7 @@ public struct DLNATable: Sendable {
     /// 最初に確かめた表（地上の帯域は SIE 製・Buffalo 製とも `DTTB`）
     static let base = DLNATable(
         allRecordingsContainer: "0/video/all",
+        recordingItemSeparator: "/pvr?id=",
         liveTunerContainer: "0/video/LiveTuner",
         liveBandSuffixes: [BroadcastingType.terrestrial: "DTTB"])
 }
@@ -312,6 +355,10 @@ public struct XSRSRequestVocabulary: Sendable {
     /// 予約で送る録画先（画質によらず内蔵の HDD）。録画はこの値の HDD に入る（torne mobile HB 1.4.4 の実測）。
     /// torne のひな形は 3 倍で外付け（USBHDD）を送るが、外付けに入った録画は一覧に出ない・再生できないことがあるので送らない
     public let recordDestination: String
+    /// 録画の保護の印の要素（一覧の item の子。0 = 保護なし・1 = 保護）
+    public let titleProtectElement: String
+    static let flagOn = "1"
+    static let flagOff = "0"
 
     /// 作る予約の文書（item の id は空。日時は `+09:00` のコロン形。番組名の要素は無い）
     public func document(for schedule: NewRecordSchedule) -> String {
@@ -348,6 +395,23 @@ public struct XSRSRequestVocabulary: Sendable {
         return wrap(item)
     }
 
+    /// 録画の保護を切り替える文書：一覧で受け取った item の要素を受け取ったまま入れ、保護の印の値だけを変える
+    /// （torne mobile HB 1.5.0 が SIE 製で測った形。録画は item の id 属性で決まり、ほかの引数は無い）。
+    /// 保護の印の要素が無い item は、`</item>` の直前に足す
+    public func protectionDocument(itemXML: String, protect: Bool) -> String {
+        let flag = "<\(titleProtectElement)>\(protect ? Self.flagOn : Self.flagOff)</\(titleProtectElement)>"
+        let pattern = "<\(titleProtectElement)\\s*/>|<\(titleProtectElement)>[^<]*</\(titleProtectElement)>"
+        let updated: String
+        if let range = itemXML.range(of: pattern, options: .regularExpression) {
+            updated = itemXML.replacingCharacters(in: range, with: flag)
+        } else if let end = itemXML.range(of: "</item>", options: .backwards) {
+            updated = itemXML.replacingCharacters(in: end, with: flag + "</item>")
+        } else {
+            updated = itemXML
+        }
+        return wrap(updated)
+    }
+
     /// 作成の文書の要素の間に入れる空白。これまで実機へ送って通った文書の形のまま（XML としては意味を持たない）
     static let creationElementSeparator = String(repeating: " ", count: 12)
 
@@ -360,5 +424,6 @@ public struct XSRSRequestVocabulary: Sendable {
         namespace: "urn:schemas-xsrs-org:metadata-1-0/x_srs/",
         programMatchingType: "SI_PROGRAMID",
         torneCreatorID: "2000",
-        recordDestination: "HDD")
+        recordDestination: "HDD",
+        titleProtectElement: "titleProtectFlag")
 }

@@ -27,6 +27,10 @@ enum ExtrasEndpoints {
     static let chapterPath = "/recorded/recordedContentChpDataGet"
     /// 録画を指すパラメータの名前
     static let titleIDParameter = "id"
+    /// 録画 1 件だけの DIDL を読む Browse の値（`p6` で確かめる口。アプリの表にはまだ載せない）
+    static let browseMetadataFlag = "BrowseMetadata"
+    /// チャプターを読む X_PvrControl のアクション（`p6` で確かめる口。引数はアプリの表の録画の ID の名前）
+    static let getTitleInfoAction = "X_GetTitleInfo"
     static let thumbnailEntryParameter = "thumbnailEntryId"
     static let chapterQuery = [("offset", "0"), ("length", "0")]
 }

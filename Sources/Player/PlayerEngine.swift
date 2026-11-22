@@ -162,7 +162,8 @@ public final class PlayerEngine: @unchecked Sendable {
         }
         switch streamType {
         case ElementaryStream.h264: return H264VideoDecoder(onFrame: handler)
-        default: return MPEG2VideoDecoder(onFrame: handler)
+        // MPEG-2 は OS ごとに違う（macOS は VideoToolbox、iOS は FFmpeg）
+        default: return PlatformVideoDecoder.mpeg2(onFrame: handler)
         }
     }
 

@@ -83,9 +83,10 @@ public enum MainNotices {
         }
     }
 
-    /// 録画一覧：読み込み中・更新中・読み込めなかった・更新できなかった（前の一覧を出している）・削除している
+    /// 録画一覧：読み込み中・更新中・読み込めなかった・更新できなかった（前の一覧を出している）・削除している・保護を切り替えている
     public static func recordings(isLoading: Bool, loadError: ErrorPresentation?, isRefreshing: Bool,
-                                  refreshError: ErrorPresentation?, isShowingSavedList: Bool, isDeleting: Bool) -> [MainNotice] {
+                                  refreshError: ErrorPresentation?, isShowingSavedList: Bool, isDeleting: Bool,
+                                  isProtecting: Bool = false) -> [MainNotice] {
         var notices: [MainNotice] = []
         if isLoading {
             notices.append(MainNotice(id: "recordings", kind: .progress, title: "録画一覧を読み込んでいます…"))
@@ -101,6 +102,9 @@ public enum MainNotices {
         }
         if isDeleting {
             notices.append(MainNotice(id: "recordings.deletion", kind: .progress, title: "録画を削除しています…"))
+        }
+        if isProtecting {
+            notices.append(MainNotice(id: "recordings.protection", kind: .progress, title: "録画の保護を切り替えています…"))
         }
         return notices
     }

@@ -34,6 +34,24 @@ public struct XSRSItem: Sendable {
     }
 }
 
+extension XSRSItem {
+    /// 一覧の文書から、id が合う item の要素を受け取ったままの文字で切り出す（`X_UpdateTitle` で送り返すため。
+    /// 読んだ値から組み立て直すと、知らない要素や属性を落として別の項目を書き換えかねない）。見つからなければ nil
+    public static func listedXML(in document: String, id: String) -> String? {
+        var searchStart = document.startIndex
+        while let open = document.range(of: "<item", range: searchStart..<document.endIndex) {
+            searchStart = open.upperBound
+            // `<item` の次が名前の続き（`<items` など）なら item ではない
+            guard let next = document[open.upperBound...].first, next == ">" || next == "/" || next.isWhitespace else { continue }
+            guard let close = document.range(of: "</item>", range: open.upperBound..<document.endIndex) else { return nil }
+            let element = String(document[open.lowerBound..<close.upperBound])
+            if let root = try? XMLTree.parse(element, source: "xsrs:item"), root.attributes["id"] == id { return element }
+            searchStart = close.upperBound
+        }
+        return nil
+    }
+}
+
 /// xsrs の `scheduledChannelID`（属性 + serviceID の `0x%04x`）
 public struct ScheduleChannel: Sendable, Equatable, Codable {
     public var broadcastingType: Int
@@ -412,6 +430,30 @@ public struct RecordedTitle: Sendable, Equatable, Identifiable, Codable {
         resumePointSeconds = item.attribute("lastPlaybackTime", "resumePoint").flatMap { Int($0) }
     }
 
+    /// 番組の情報（DIDL）を合わせた写し
+    public func merging(_ didl: DIDLItem) -> RecordedTitle {
+        var copy = self
+        copy.merge(didl)
+        return copy
+    }
+
+    /// 前に取った同じ録画から、番組の情報（DIDL）から入る項目だけを引き継いだ写し（録画一覧〔xsrs〕だけを読み直したとき。
+    /// 保護・新着・録画中・前回の再生・再開位置・長さは自分〔読み直した値〕のまま）
+    public func keepingMetadata(of saved: RecordedTitle) -> RecordedTitle {
+        var copy = self
+        copy.description = saved.description
+        copy.longDescription = saved.longDescription
+        copy.channelName = saved.channelName
+        copy.copyCountRemaining = saved.copyCountRemaining
+        copy.genres = saved.genres
+        copy.audioComponentType = saved.audioComponentType
+        copy.multiESInfo = saved.multiESInfo
+        copy.programStart = saved.programStart
+        copy.programEnd = saved.programEnd
+        copy.resources = saved.resources
+        return copy
+    }
+
     mutating func merge(_ didl: DIDLItem) {
         description = didl.description ?? description
         longDescription = didl.longDescription ?? longDescription
@@ -551,19 +593,26 @@ public struct RecordingCatalogService: Sendable {
     private func pagedList<Item>(_ action: SOAPAction,
                                  arguments: (Int) -> [(String, String)],
                                  parse: (String, String) throws -> [Item]) async throws -> [Item] {
+        try await pagedPages(action, arguments: arguments, parse: parse).flatMap(\.items)
+    }
+
+    /// 頁を送りながら、頁ごとの Result の文字と読んだ中身を集める
+    private func pagedPages<Item>(_ action: SOAPAction,
+                                  arguments: (Int) -> [(String, String)],
+                                  parse: (String, String) throws -> [Item]) async throws -> [(result: String, items: [Item])] {
         let source = "soap:\(action.name)"
-        var items: [Item] = []
+        var pages: [(result: String, items: [Item])] = []
         var startingIndex = 0
         for _ in 0..<Self.maxListPages {
             let response = try await call(action, arguments(startingIndex))
             guard let result = response.result else { throw NasneError.parse(source, "Result が無い") }
             let page = try parse(result, source)
-            items += page
+            pages.append((result, page))
             let returned = response.numberReturned ?? page.count
             startingIndex += returned
             guard returned > 0, let total = response.totalMatches, startingIndex < total else { break }
         }
-        return items
+        return pages
     }
 
     /// 録画の一覧。`withMetadata` なら DIDL を取り、タイトル ID で結合する
@@ -595,6 +644,48 @@ public struct RecordingCatalogService: Sendable {
         } catch let error as NasneError where error.category == .soapFault && error.code == NasneError.titleProtectedFault {
             throw NasneError.titleProtected(from: error)
         }
+    }
+
+    /// 一覧を読み直し、その録画の item の要素を受け取ったままの文字で返す（Browse は読まない。一覧に無ければ nil）
+    public func listedTitleXML(id: String) async throws -> String? {
+        let pages = try await pagedPages(
+            actions.getTitleList,
+            arguments: { listArguments(startingIndex: $0, requestedCount: names.titleListRequestCount) },
+            parse: { try XSRSItem.parseDocument($0, source: $1) })
+        for page in pages where page.items.contains(where: { $0.id == id }) {
+            return XSRSItem.listedXML(in: page.result, id: id)
+        }
+        return nil
+    }
+
+    /// 録画の保護を切り替える（`X_UpdateTitle`）。送る直前に一覧を読み直し、その録画の item を受け取ったまま、
+    /// 保護の印だけを変えて送り返す。一覧に無ければ組み立てずに断る。自動で再試行しない
+    public func setProtection(id: String, protect: Bool) async throws {
+        let action = actions.updateTitle
+        guard let itemXML = try await listedTitleXML(id: id) else {
+            throw NasneError.validation("soap:\(action.name)", "一覧にその録画が無い")
+        }
+        _ = try await call(action, [(names.elements, profile.xsrs.protectionDocument(itemXML: itemXML, protect: protect))])
+    }
+
+    /// 録画 1 件の番組の情報（DIDL）を Browse の 1 件だけの読み方で読む（約 30 ms。新しい録画を一覧の読み直しのすぐ後に補う）。
+    /// 返らなければ nil
+    public func titleMetadata(id: String) async throws -> DIDLItem? {
+        let response = try await call(actions.browse, [
+            (names.objectID, profile.dlna.recordingItemPrefix + id), (names.browseFlag, names.browseMetadata),
+            (names.filter, names.allProperties), (names.startingIndex, "0"), (names.requestedCount, String(names.requestAll)),
+            (names.sortCriteria, ""),
+        ])
+        guard let result = response.result else { return nil }
+        let items = try DIDLItem.parseDocument(result, source: "soap:\(actions.browse.name)")
+        return items.first { $0.titleID == id }
+    }
+
+    /// 録画のチャプターの点（録画の頭からの秒。`X_GetTitleInfo`。1 件 中央 42 ms）。確かめを通らない・2 点に満たなければ空
+    public func chapters(id: String, durationSeconds: Int) async throws -> [Double] {
+        let response = try await call(actions.getTitleInfo, [(names.titleID, id)])
+        guard let result = response.result else { return [] }
+        return TitleChapters.usablePoints(result: result, durationSeconds: durationSeconds)
     }
 
     /// ContentDirectory の Browse（直下の子の item。1 回に 50 件までなので頁を送る）

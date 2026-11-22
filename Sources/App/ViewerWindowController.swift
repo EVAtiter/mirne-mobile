@@ -31,7 +31,7 @@ final class ViewerWindowController {
     /// 位置と大きさの保存と復元（16:9 を保って戻す）
     @ObservationIgnored private let placement = WindowPlacementController(
         key: WindowPlacementKey.viewer, name: "視聴ウインドウ",
-        minimumSize: ViewerLayout.minimumSize, aspectRatio: ViewerLayout.aspectRatio)
+        minimumSize: ViewerLayout.minimumSize, aspectRatio: ViewerLayout.aspectRatio, remembersSizeAsUser: true)
 
     /// 視聴ウィンドウを受け取る（開くたびに呼ばれる）
     func attach(_ window: NSWindow) {
@@ -103,7 +103,8 @@ final class ViewerWindowController {
         let resolved = ViewerWindowPositioning.resolvedOrigin(origin, windowSize: size,
                                                               visibleFrames: NSScreen.screens.map(\.visibleFrame),
                                                               anchor: anchor) ?? origin
-        window.setFrame(CGRect(origin: resolved, size: size), display: true, animate: false)
+        // AppKit に利用者が決めた大きさとして覚えさせる（setFrame だと、ほかの画面へ移したときに前に手で決めた大きさへ戻る）
+        window.setFrameAsUserSize(CGRect(origin: resolved, size: size))
         logger.info("標準の大きさに戻した: \(size.width, privacy: .public)×\(size.height, privacy: .public)")
         // 人の操作で大きさを変えたので保存する（自分で動かした移動は、知らせが来ても保存しないことがあるため明示する）
         placement.saveNow()

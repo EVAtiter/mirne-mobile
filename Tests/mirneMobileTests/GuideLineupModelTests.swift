@@ -98,17 +98,19 @@ struct GuideLineupModelTests {
         #expect(failing.lineup.isEmpty)
     }
 
-    @Test("ロゴは 1 回だけ読み、手動の更新のときだけ読み直す")
+    @Test("ロゴは 1 回だけ読み、手動の更新のときだけ読み直す（読むのは共通の置き場。地上・BS・CS の 3 回）")
     func loadsLogosOnce() async {
         let source = LogosOnly()
-        let model = GuideLineupModel(channels: ChannelCatalog(deviceInfo: ChannelsOnly(channels: sample)), logoSource: source)
+        let logos = ChannelLogoModel(source: source, store: nil)
+        let model = GuideLineupModel(channels: ChannelCatalog(deviceInfo: ChannelsOnly(channels: sample)), logos: logos)
         await model.loadLogos()
         #expect(model.logos.keys.sorted() == [0x4010])
+        #expect(source.calls == ChannelLogoModel.bands.count)
         await model.loadLogos()
-        #expect(source.calls == 1)   // 開き直しでは読み直さない
+        #expect(source.calls == ChannelLogoModel.bands.count)   // 開き直しでは読み直さない
         source.setLogos([0x4010: Data([0x89, 0x50, 0x4E, 0x47]), 0x4011: Data([0x89, 0x50, 0x4E, 0x47])])
         await model.loadLogos(reload: true)
-        #expect(source.calls == 2)
+        #expect(source.calls == 2 * ChannelLogoModel.bands.count)
         #expect(model.logos.keys.sorted() == [0x4010, 0x4011])
     }
 
@@ -116,15 +118,23 @@ struct GuideLineupModelTests {
     func logoFailureKeepsPrevious() async {
         let source = LogosOnly()
         source.setFails(true)
-        let model = GuideLineupModel(channels: ChannelCatalog(deviceInfo: ChannelsOnly(channels: sample)), logoSource: source)
+        let logos = ChannelLogoModel(source: source, store: nil)
+        let model = GuideLineupModel(channels: ChannelCatalog(deviceInfo: ChannelsOnly(channels: sample)), logos: logos)
         await model.loadLogos()
         #expect(model.logos.isEmpty)
         source.setFails(false)
         await model.loadLogos()   // 読めていないので、開き直しで読み直す
-        #expect(source.calls == 2)
+        #expect(source.calls == 2 * ChannelLogoModel.bands.count)
         #expect(model.logos.count == 1)
         source.setFails(true)
         await model.loadLogos(reload: true)
         #expect(model.logos.count == 1)   // 失敗しても前のロゴを残す
+    }
+
+    @Test("ロゴの置き場が無ければ、ロゴは空のまま（番組表は出す）")
+    func withoutLogoModel() async {
+        let model = GuideLineupModel(channels: ChannelCatalog(deviceInfo: ChannelsOnly(channels: sample)))
+        await model.loadLogos(reload: true)
+        #expect(model.logos.isEmpty)
     }
 }

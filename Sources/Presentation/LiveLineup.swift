@@ -150,6 +150,21 @@ public enum LiveLineup {
     }
 
     /// ライブを始めるときの局：前に見た局が見られればそれ、無ければ並べている最初の見られる局
+    /// 録画中の録画の局（見られる局の中で。録画中の録画が無い・その局が見られなければ nil）。
+    /// nasne はチューナーが 1 つで、録画している間は、録画している局しかライブで見られない（ほかの局は配信が 511 で断られた。2026-11-22・Buffalo 製）
+    public static func recordingStation(_ titles: [RecordedTitle], in stations: [LiveStation]) -> LiveStation? {
+        for title in titles where title.isRecording {
+            guard let channel = title.channel else { continue }
+            if let station = stations.first(where: {
+                $0.channel.serviceID == channel.serviceID && $0.channel.broadcastingType == channel.broadcastingType
+                    && $0.unavailableReason == nil
+            }) {
+                return station
+            }
+        }
+        return nil
+    }
+
     public static func initialStation(last: LiveStationKey?, visible: [LiveStation], all: [LiveStation]) -> LiveStation? {
         if let last, let station = (all + visible).first(where: { $0.key == last }), station.unavailableReason == nil {
             return station

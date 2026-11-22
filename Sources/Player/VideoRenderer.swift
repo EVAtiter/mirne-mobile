@@ -1,4 +1,3 @@
-import AppKit
 import CoreVideo
 import Foundation
 import ImageIO
@@ -253,68 +252,6 @@ public final class VideoRenderer {
     }
 }
 
-/// 映像を出すビュー。CAMetalLayer を持ち、描き込む先の大きさを画面の画素に合わせるだけで、自分では描かない
-/// （描くのは `VideoRenderCore` が描画のスレッドで）
-public final class VideoLayerView: NSView {
-    let metalLayer = CAMetalLayer()
-    /// 窓に置いた・別の画面へ移ったとき（理由の文言を渡す）
-    var onDisplayChange: ((String) -> Void)?
-    /// 描き込む先の大きさが変わったとき
-    var onDrawableSizeChange: (() -> Void)?
-    private var screenObserver: (any NSObjectProtocol)?
-
-    init(device: MTLDevice) {
-        super.init(frame: .zero)
-        metalLayer.device = device
-        metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.framebufferOnly = true
-        metalLayer.isOpaque = true
-        metalLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
-        wantsLayer = true
-        layerContentsRedrawPolicy = .duringViewResize
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) は使わない") }
-
-    override public func makeBackingLayer() -> CALayer { metalLayer }
-    override public var isOpaque: Bool { true }
-
-    override public func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        updateDrawableSize()
-    }
-
-    override public func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        updateDrawableSize()
-    }
-
-    override public func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        screenObserver = nil
-        updateDrawableSize()
-        guard let window else { return }
-        screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.updateDrawableSize()
-                self?.onDisplayChange?("窓が別の画面へ移った")
-            }
-        }
-        onDisplayChange?("窓に置いた")
-    }
-
-    private func updateDrawableSize() {
-        let scale = window?.backingScaleFactor ?? 1
-        if metalLayer.contentsScale != scale { metalLayer.contentsScale = scale }
-        let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
-        guard size.width > 0, size.height > 0, metalLayer.drawableSize != size else { return }
-        metalLayer.drawableSize = size
-        onDrawableSizeChange?()
-    }
-}
-
 /// 描画のスレッドで描く本体。
 ///
 /// 表示のタイミングは CAMetalDisplayLink を描画のスレッドの run loop に置いて受け取る。描き込む先（drawable）は
@@ -328,6 +265,7 @@ public final class VideoLayerView: NSView {
 /// スレッドの分担：
 /// - 描画のスレッドだけが触るもの: `link`・`pendingCheck`・`currentFrame`・`previousFrame`・`intermediate`・`textureCache`・`texturesFromLastDraw`・`texturesInUse`
 /// - どのスレッドからも触るもの: `shared`（ロックで守る）
+/// - 表示のタイミングのコールバックは、描画のスレッドの外（メインスレッド）から来ることがあるので、そのときは描画のスレッドへ回して描く
 final class VideoRenderCore: NSObject, CAMetalDisplayLinkDelegate, @unchecked Sendable {
     /// メインスレッドと描画のスレッドで受け渡す値
     private struct Shared {
@@ -596,6 +534,15 @@ final class VideoRenderCore: NSObject, CAMetalDisplayLinkDelegate, @unchecked Se
     // MARK: - 描く（描画のスレッドで）
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
+        // 描画のスレッドの run loop に置いていても、CAMetalDisplayLink はメインスレッドからも呼ぶことがある
+        // （ディスプレイ間で窓をドラッグしている間。2026-11-22 に Thread Sanitizer で確かめた）。その場で描くと、描画のスレッドの
+        // 描画と同時に走り、描画のスレッドだけが触る値（直前の描画のテクスチャの配列など）が壊れて落ちたので、描画のスレッドへ回す
+        guard thread.isCurrent else {
+            nonisolated(unsafe) let drawable = update.drawable
+            logger.debug("表示のタイミングが描画のスレッドの外から呼ばれたので、描画のスレッドへ回す")
+            thread.perform { [self] in draw(drawable) }
+            return
+        }
         draw(update.drawable)
     }
 
@@ -678,6 +625,8 @@ final class VideoRenderCore: NSObject, CAMetalDisplayLinkDelegate, @unchecked Se
                 encoder.endEncoding()
             }
         }
+        // シミュレータの SDK には addPresentedHandler が無い（実機向けにはある）。シミュレータでは映像と音のずれを記録しない
+        #if !targetEnvironment(simulator)
         if let fieldStart, let clockAtDraw {
             // 画面に実際に出た時刻を音声と同じ時計に換算し、ずれと、描いてから出るまでの遅れを記録する
             let recorder = avSync
@@ -694,6 +643,7 @@ final class VideoRenderCore: NSObject, CAMetalDisplayLinkDelegate, @unchecked Se
                 recorder.record(milliseconds: Double(media - fieldStart) / 90.0)
             }
         }
+        #endif
         commands.present(drawable)
         commands.commit()
         if clockAtDraw == nil { enterIdleIfNothingToShow() }
@@ -885,6 +835,9 @@ final class RenderThread: @unchecked Sendable {
         ready.wait()
         runLoop = started!
     }
+
+    /// 今のスレッドが描画のスレッドか
+    var isCurrent: Bool { CFRunLoopGetCurrent() === runLoop }
 
     /// 描画のスレッドで行う（渡した順に）
     func perform(_ work: @escaping @Sendable () -> Void) {

@@ -549,6 +549,41 @@ struct RecordingCatalogTests {
         #expect(invalid?.messageKey == "error.invalidArgs")
     }
 
+    @Test("一覧の文書から、id が合う item を受け取ったままの文字で切り出す")
+    func listedItemXML() throws {
+        let document = #"<?xml version="1.0"?><xsrs xmlns="urn:x"><items/><item id="1"><title>a &amp; b</title></item>"#
+            + #"<item id="2"><title>c</title><titleProtectFlag>0</titleProtectFlag></item></xsrs>"#
+        #expect(XSRSItem.listedXML(in: document, id: "1") == #"<item id="1"><title>a &amp; b</title></item>"#)
+        #expect(XSRSItem.listedXML(in: document, id: "2") == #"<item id="2"><title>c</title><titleProtectFlag>0</titleProtectFlag></item>"#)
+        #expect(XSRSItem.listedXML(in: document, id: "3") == nil)
+    }
+
+    @Test("保護の文書：受け取った item の保護の印だけを変えて包む。印が無い・空の要素の item にも付ける")
+    func protectionDocument() {
+        let vocabulary = NasneProfiles.base.xsrs
+        let prefix = #"<?xml version="1.0"?><xsrs xmlns="urn:schemas-xsrs-org:metadata-1-0/x_srs/">"#
+        let item = #"<item id="7"><title>x</title><titleProtectFlag>0</titleProtectFlag><recordSize>5</recordSize></item>"#
+        #expect(vocabulary.protectionDocument(itemXML: item, protect: true)
+                == prefix + #"<item id="7"><title>x</title><titleProtectFlag>1</titleProtectFlag><recordSize>5</recordSize></item></xsrs>"#)
+        let protected = #"<item id="7"><titleProtectFlag>1</titleProtectFlag></item>"#
+        #expect(vocabulary.protectionDocument(itemXML: protected, protect: false)
+                == prefix + #"<item id="7"><titleProtectFlag>0</titleProtectFlag></item></xsrs>"#)
+        #expect(vocabulary.protectionDocument(itemXML: #"<item id="7"><title>x</title></item>"#, protect: true)
+                == prefix + #"<item id="7"><title>x</title><titleProtectFlag>1</titleProtectFlag></item></xsrs>"#)
+        #expect(vocabulary.protectionDocument(itemXML: #"<item id="7"><titleProtectFlag/></item>"#, protect: true)
+                == prefix + #"<item id="7"><titleProtectFlag>1</titleProtectFlag></item></xsrs>"#)
+    }
+
+    @Test("一覧に無い録画の保護は、組み立てずに断る（送らない）")
+    func protectionOfUnlistedTitle() async {
+        let http = MockHTTP()
+        http.reply("/XSRS", method: "POST", body: NasneFixture.data("soap/title_list.xml"))
+        let catalog = RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
+        let error = await #expect(throws: NasneError.self) { try await catalog.setProtection(id: "999", protect: true) }
+        #expect(error?.category == .validation)
+        #expect(!http.sentRequests.contains { String(decoding: $0.httpBody ?? Data(), as: UTF8.self).contains("X_UpdateTitle") })
+    }
+
     @Test("SOAP の封筒：引数の値をエスケープし、SOAPAction を付ける")
     func envelope() async throws {
         let http = MockHTTP()

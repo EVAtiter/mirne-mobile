@@ -8,13 +8,6 @@ import os
 // - スリープの前に受信と接続を閉じ、復帰後は一時停止のまま待つ（`PowerObserver`）
 // - 終了の前に受信を止め終わる（接続を閉じ、鍵を捨てる）のを待つ（`AppDelegate`）
 
-/// ディスプレイのスリープの抑止の決まり
-enum DisplaySleepTiming {
-    /// 抑えるかを見直す間隔。再生の始まり・終わり・一時停止・最小化への追従はこの間隔まで遅れてよい
-    /// （ディスプレイが眠るまでの時間は分の単位なので、数秒の遅れは見えない。mirne と同じ）
-    static let checkInterval: Duration = .seconds(2)
-}
-
 /// 終了の決まり
 enum TerminationTiming {
     /// 終了の前に受信を止め終わるのを待つ上限。nasne に届かないときに終了が止まったままにならないように

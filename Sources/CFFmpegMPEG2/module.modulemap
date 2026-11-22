@@ -1,0 +1,6 @@
+// iPad 版の Swift から FFmpeg（libavcodec・libavutil）を呼ぶための入口。
+// 見出しは scripts/build-ffmpeg-ios.sh が build/ffmpeg/include に置く（project.yml でその場所を渡す）
+module CFFmpegMPEG2 {
+    header "shim.h"
+    export *
+}

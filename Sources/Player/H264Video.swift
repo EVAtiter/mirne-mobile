@@ -268,6 +268,13 @@ public final class H264VideoDecoder: VideoDecoding, @unchecked Sendable {
     private var nextToken = 1
     private let countersLock = NSLock()
     private var errors = 0
+    /// セッションが使えなくなった（`kVTInvalidSessionErr`）。次の decode の前に作り直す。
+    /// iOS はアプリが裏へ回るとハードウェアの復号のセッションを無効にするので、戻ってから同じ録画を張り直すと、
+    /// SPS・PPS が同じでセッションが作り直されず、復号が全部失敗して絵が出なくなる（2026-11-21・iPadOS 27.2.1 で実測）
+    private var sessionInvalidated = false
+    /// 使えなくなったセッションを作り直した回数
+    public var sessionRebuildsAfterInvalidation: Int { countersLock.withLock { rebuildsAfterInvalidation } }
+    private var rebuildsAfterInvalidation = 0
 
     public private(set) var skippedBeforeIntra = 0
     public private(set) var damagedPictures = 0
@@ -289,6 +296,16 @@ public final class H264VideoDecoder: VideoDecoding, @unchecked Sendable {
         var parameterSetsChanged = false
         if let newSPS = unit.sps, newSPS != sps { sps = newSPS; parameterSetsChanged = true }
         if let newPPS = unit.pps, newPPS != pps { pps = newPPS; parameterSetsChanged = true }
+        let invalidated = countersLock.withLock { () -> Bool in
+            defer { sessionInvalidated = false }
+            if sessionInvalidated { rebuildsAfterInvalidation += 1 }
+            return sessionInvalidated
+        }
+        if invalidated, let session {
+            logger.info("H.264 の復号のセッションが使えなくなったので作り直す")
+            VTDecompressionSessionInvalidate(session)
+            self.session = nil
+        }
         if parameterSetsChanged || session == nil, sps != nil, pps != nil {
             rebuildSession()
         }
@@ -420,7 +437,10 @@ public final class H264VideoDecoder: VideoDecoding, @unchecked Sendable {
     }
 
     fileprivate func recordError(_ status: OSStatus) {
-        countersLock.withLock { errors += 1 }
+        countersLock.withLock {
+            errors += 1
+            if status == kVTInvalidSessionErr { sessionInvalidated = true }
+        }
         logger.debug("H.264 の復号に失敗した: \(status, privacy: .public)")
     }
 }

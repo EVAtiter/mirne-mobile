@@ -1,5 +1,5 @@
 // アプリアイコンのマスター PNG（1024×1024・8-bit・sRGB）を描く。
-// 使い方: swift scripts/make-icon.swift <出力.png> [standard|small]（scripts/make-icon.sh から呼ばれる）
+// 使い方: swift scripts/make-icon.swift <出力.png> [standard|small|ios]（scripts/make-icon.sh から呼ばれる）
 //
 // 図柄：淡い地に濃紺のテレビ（角丸の画面の枠と台）を置き、
 // 白い画面に青い「mirne」の文字と、その下の中央に青い再生の三角。テレビの形は SF Symbols の tv と同じ形を自前で描く（SF Symbols は
@@ -7,6 +7,7 @@
 // （16:9 → 約 3:2）、文字を少し小さくして上へ寄せ、再生の三角を足した（色は mirne と同じ）。
 // macOS 標準のタイル（余白 100px・ベース 824px・連続角丸 = ベース × 0.2247）の内側に描く。small は 16×16（1x）専用の
 // 余白の狭い絵（macOS 27 は標準の余白の 16px を灰色の箱に入れることがある。使うかは make-icon.sh を参照）。
+// ios は iPad 版の 1 枚（地をキャンバスいっぱいに塗り、角丸は描かない〔OS が切り抜く〕・透過なし）。
 // 色は CGColor(srgbRed:) で起こす（CGColor(red:) は Generic RGB で、焼いた画素が指定より明るくなる）
 import AppKit
 import SwiftUI
@@ -18,15 +19,19 @@ let cornerRatio: CGFloat = 0.2247
 let standardMargin: CGFloat = 100
 /// 16×16 専用の絵の余白（SendBlocker・Claude Meter で 16px が通った値）
 let smallIconMargin: CGFloat = 64
+/// iPad 版の絵の大きさ。macOS 版と板に対する比を同じにすると（1024 ÷ 824 倍）、iOS はキャンバス全体が板に見えるので大きく見える。
+/// ホーム画面には Finder ほど小さい表示が無いので、その 0.85 倍にする（Stream Player の iOS 版と同じ決め方）
+let iosFigureScale: CGFloat = 1024 / 824 * 0.85
 
 let arguments = CommandLine.arguments
 guard arguments.count > 1 else { fputs("使い方: make-icon.swift <出力.png> [standard|small]\n", stderr); exit(64) }
 let out = arguments[1]
 let variant = arguments.count > 2 ? arguments[2] : "standard"
-let margin = variant == "small" ? smallIconMargin : standardMargin
+let isIOS = variant == "ios"
+let margin = isIOS ? 0 : (variant == "small" ? smallIconMargin : standardMargin)
 let base = canvas - margin * 2
-/// 絵柄の寸法は標準のベース（824px）で決めてあり、ベースの大きさに比例させる
-let k = base / (canvas - standardMargin * 2)
+/// 絵柄の寸法は標準のベース（824px）で決めてあり、ベースの大きさに比例させる（iPad 版は `iosFigureScale`）
+let k = isIOS ? iosFigureScale : base / (canvas - standardMargin * 2)
 
 func color(_ hex: UInt32) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -59,8 +64,9 @@ let triangleWidthRatio: CGFloat = 0.9, triangleOpticalShift: CGFloat = 0.08, tri
 
 let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
 let n = Int(canvas)
-let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0,
-                    space: srgb, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+// iPad 版は透過なし（iOS のアイコンはアルファチャネルを持たない）
+let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0, space: srgb,
+                    bitmapInfo: (isIOS ? CGImageAlphaInfo.noneSkipLast : CGImageAlphaInfo.premultipliedLast).rawValue)!
 NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
 
 func roundedPath(_ rect: CGRect, radius: CGFloat) -> CGPath {
@@ -103,10 +109,10 @@ func drawPlayTriangle(color fill: CGColor, centeredAt point: CGPoint, height: CG
     ctx.drawPath(using: .fillStroke)
 }
 
-// タイル（連続角丸・縦のグラデーション）
+// タイル（連続角丸・縦のグラデーション。iPad 版はキャンバスいっぱいで角丸なし）
 let tile = CGRect(x: margin, y: margin, width: base, height: base)
 ctx.saveGState()
-ctx.addPath(roundedPath(tile, radius: base * cornerRatio))
+ctx.addPath(isIOS ? CGPath(rect: tile, transform: nil) : roundedPath(tile, radius: base * cornerRatio))
 ctx.clip()
 let gradient = CGGradient(colorsSpace: srgb, colors: [tileTop, tileBottom] as CFArray, locations: [0, 1])!
 ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: tile.maxY), end: CGPoint(x: 0, y: tile.minY), options: [])

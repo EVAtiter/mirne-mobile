@@ -141,6 +141,24 @@ struct LiveLineupTests {
         #expect(LiveLineup.initialStation(last: nil, visible: [], all: []) == nil)
     }
 
+    @Test("録画中の局：録画中の録画の局が見られればそれ。録画中でない・局が見られない・放送の種別が違えば nil")
+    func recordingStation() throws {
+        func title(_ id: String, serviceID: Int, recording: Bool, type: Int = BroadcastingType.terrestrial) throws -> RecordedTitle {
+            try RecordedTitle(item: XSRSItem(id: id, fields: ["title": "架空番組", "scheduledChannelID": String(format: "0x%04x", serviceID),
+                                                               "recordingFlag": recording ? "1" : "0"],
+                                             attributes: ["scheduledChannelID": ["broadcastingType": String(type), "channelType": String(type)]]),
+                              source: "test")
+        }
+        let all = Self.stations(showsSubchannels: true)
+        #expect(LiveLineup.recordingStation([try title("1", serviceID: 0x4010, recording: false),
+                                             try title("2", serviceID: 0x4011, recording: true)], in: all)?.channel.serviceID == 0x4011)
+        #expect(LiveLineup.recordingStation([try title("1", serviceID: 0x4011, recording: false)], in: all) == nil)
+        #expect(LiveLineup.recordingStation([try title("1", serviceID: 0x4011, recording: true, type: BroadcastingType.bs)], in: all) == nil)
+        // ライブの一覧に無い（見られない）局を録画しているときは選ばない
+        let unavailable = try #require(all.first { $0.unavailableReason != nil })
+        #expect(LiveLineup.recordingStation([try title("1", serviceID: unavailable.channel.serviceID, recording: true)], in: all) == nil)
+    }
+
     @Test("局の鍵は 10 進の「ネットワーク-TS-サービス」で保存して読み戻せる")
     func keyStorage() {
         let original = key(0x4011)

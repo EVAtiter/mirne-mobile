@@ -6,8 +6,8 @@ import os
 //
 // 局は nasne のチャンネル一覧（`status/channelListGet`。地上）から作る。一覧はほかの画面と共通の `ChannelCatalog` が持つ。テレビのサービスだけを並べ、
 // サブチャンネル（同じ TS の中の、本チャンネルでないテレビのサービス。`Channel.subchannelServiceIDs`）は既定で隠す。
-// 局のロゴ（`chEpg/channelLogoDataGet`）もここで持つ。ロゴはメモリにだけ置き（ディスクに書かない）、
-// 取れなくても番組表は出す（ロゴの無い局名だけになる。torne mobile HB と同じ）。
+// 局のロゴは画面に共通の置き場（`ChannelLogoModel`）から地上の分を引く。取れなくても番組表は出す
+// （ロゴの無い局名だけになる。torne mobile HB と同じ）。
 // AppKit・SwiftUI に依存させない。
 
 /// 番組表に並べる局の一覧のモデル
@@ -18,19 +18,17 @@ public final class GuideLineupModel {
     public var channels: Loadable<[Channel]> { catalog.channels }
     /// サブチャンネルも並べるか（既定は隠す）
     public var showsSubchannels: Bool
-    /// 局のロゴ（serviceID → PNG）。読めるまでと、読めなかったときは空
-    public private(set) var logos: [Int: Data] = [:]
+    /// 地上の局のロゴ（serviceID → PNG）。読めるまでと、読めなかったときは空
+    public var logos: [Int: Data] { logoModel?.terrestrial ?? [:] }
 
     private let catalog: ChannelCatalog
-    private let logoSource: (any ProgramGuideService)?
-    /// ロゴを読み終えたか（失敗したら false のまま、次に開いたときに読み直す）
-    @ObservationIgnored private var logosLoaded = false
-    @ObservationIgnored private var loadingLogos = false
+    /// 局のロゴの共通の置き場（無ければロゴを出さない）
+    private let logoModel: ChannelLogoModel?
     private static let logger = Logger(subsystem: AppLog.subsystem, category: "epg")
 
-    public init(channels: ChannelCatalog, logoSource: (any ProgramGuideService)? = nil, showsSubchannels: Bool = false) {
+    public init(channels: ChannelCatalog, logos: ChannelLogoModel? = nil, showsSubchannels: Bool = false) {
         catalog = channels
-        self.logoSource = logoSource
+        logoModel = logos
         self.showsSubchannels = showsSubchannels
     }
 
@@ -45,19 +43,11 @@ public final class GuideLineupModel {
         await catalog.load()
     }
 
-    /// 局のロゴを読む。読み終えていたら、`reload`（手動の更新）のときだけ読み直す。
+    /// 局のロゴを読む。起動したときに共通の置き場が読むので、まだ読めていないときと、`reload`（手動の更新）のときだけ読み直す。
     /// 失敗しても誤りは出さず、前に読めたロゴを残す（ロゴは番組表の飾りなので、番組表を止めない）
     public func loadLogos(reload: Bool = false) async {
-        guard let logoSource, !loadingLogos, reload || !logosLoaded else { return }
-        loadingLogos = true
-        defer { loadingLogos = false }
-        do {
-            logos = try await logoSource.logos(broadcastingType: BroadcastingType.terrestrial)
-            logosLoaded = true
-            Self.logger.info("局のロゴ: \(self.logos.count, privacy: .public) 件")
-        } catch {
-            Self.logger.error("局のロゴ: 読めなかった（\(NasneDiagnostics.summary(error), privacy: .public)）")
-        }
+        guard let logoModel, reload || !logoModel.fetched else { return }
+        await logoModel.refresh()
     }
 
     /// テレビのサービスを並べる。サブチャンネルは `showsSubchannels` のときだけ。

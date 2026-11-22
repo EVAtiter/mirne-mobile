@@ -40,6 +40,9 @@ struct ViewingPolicyTests {
         // 新着の印が消えていて再開位置が 0
         #expect(ViewingPolicy.resolve(try title(lastPlayback: "2026-01-06T10:00:00+09:00", resume: 0), local: nil) == .completed)
         #expect(ViewingPolicy.resolve(try title(), local: nil) == .completed)
+        // 新着の印が残っていても、前回の再生の時刻があれば未再生にしない（ほかの端末で見終えて 0 を書き戻した形）
+        #expect(ViewingPolicy.resolve(try title(isNew: true, lastPlayback: "2026-01-06T10:00:00+09:00", resume: 0), local: nil)
+                == .completed)
     }
 
     @Test("手元の記録より nasne の前回の再生が新しければ nasne の値、古ければ手元の記録")
@@ -160,5 +163,87 @@ struct ViewingRecorderTests {
         await reloaded.load()
         #expect(reloaded.state(of: first) == .interrupted(seconds: 300))
         #expect(reloaded.state(of: second) == .completed)
+    }
+}
+
+/// 試験で進める時計
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var now: Date { lock.withLock { value } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { value += seconds } }
+}
+
+/// 書き戻しの偽の送り先（送った録画の ID と位置を順に覚える）
+private actor ResumeWrites: ResumePositionService {
+    private(set) var sent: [(id: String, seconds: Double)] = []
+    func setResumePosition(id: String, seconds: Double) async throws { sent.append((id, seconds)) }
+}
+
+@MainActor
+@Suite("再開位置の書き戻し")
+struct ResumeWriteBackTests {
+    /// 毎回別の UserDefaults（設定の鍵を試験の間で持ち越さない）
+    private func defaults() throws -> UserDefaults {
+        let name = "ResumeWriteBackTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test("録画から離れたときだけ書き戻す：途中までは止めた位置、見終わったら 0。定期の記録と一時停止では送らない")
+    func writesOnLeave() async throws {
+        let writes = ResumeWrites()
+        let clock = TestClock(try date("2026-01-07T10:00:00+09:00"))
+        let recorder = ViewingRecorder(udn: "uuid:a", library: nil, resumePositions: writes, defaults: try defaults(), now: { clock.now })
+        recorder.begin(try title("1"))
+        recorder.record(PlaybackCheckpoint(position: 100, duration: 1800, ended: false))
+        recorder.record(PlaybackCheckpoint(position: 200, duration: 1800, ended: false, occasion: .paused))
+        recorder.record(PlaybackCheckpoint(position: 300.7, duration: 1800, ended: false, occasion: .left))
+        clock.advance(60)
+        recorder.begin(try title("2"))
+        recorder.record(PlaybackCheckpoint(position: 1790, duration: 1800, ended: false, occasion: .left))   // 残り 60 秒を切った
+        clock.advance(60)
+        recorder.begin(try title("3"))
+        recorder.record(PlaybackCheckpoint(position: 1800, duration: 1800, ended: true, occasion: .left))
+        await recorder.flush()
+        let sent = await writes.sent
+        #expect(sent.map(\.id) == ["1", "2", "3"])
+        #expect(sent.map(\.seconds) == [300.7, 0, 0])
+    }
+
+    @Test("同じ録画・同じ位置を続けて送らない（1 回の操作で二度知らせが来る）。間を置けば送る")
+    func skipsDuplicate() async throws {
+        let writes = ResumeWrites()
+        let clock = TestClock(try date("2026-01-07T10:00:00+09:00"))
+        let recorder = ViewingRecorder(udn: "uuid:a", library: nil, resumePositions: writes, defaults: try defaults(), now: { clock.now })
+        recorder.begin(try title("1"))
+        recorder.record(PlaybackCheckpoint(position: 300, duration: 1800, ended: false, occasion: .left))
+        recorder.record(PlaybackCheckpoint(position: 300.4, duration: 1800, ended: false, occasion: .left))
+        clock.advance(ViewingPolicy.writeBackDuplicateWindow + 1)
+        recorder.record(PlaybackCheckpoint(position: 300, duration: 1800, ended: false, occasion: .left))
+        await recorder.flush()
+        #expect(await writes.sent.count == 2)
+    }
+
+    @Test("設定で切ってある・録画中の録画・送り先が無いときは送らない（手元の記録はする）")
+    func doesNotWrite() async throws {
+        let writes = ResumeWrites()
+        let off = try defaults()
+        off.set(false, forKey: ViewingSettingsKey.writesResumePosition)
+        let disabled = ViewingRecorder(udn: "uuid:a", library: nil, resumePositions: writes, defaults: off)
+        disabled.begin(try title("1"))
+        disabled.record(PlaybackCheckpoint(position: 300, duration: 1800, ended: false, occasion: .left))
+        #expect(disabled.state(of: try title("1")) == .interrupted(seconds: 300))
+
+        let recorder = ViewingRecorder(udn: "uuid:a", library: nil, resumePositions: writes, defaults: try defaults())
+        var recording = try title("2")
+        recording.isRecording = true
+        recorder.begin(recording)
+        recorder.record(PlaybackCheckpoint(position: 300, duration: nil, ended: false, occasion: .left))
+        await disabled.flush()
+        await recorder.flush()
+        #expect(await writes.sent.isEmpty)
     }
 }

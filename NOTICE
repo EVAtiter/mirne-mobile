@@ -136,3 +136,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+The iOS / iPadOS version of this product includes FFmpeg
+(https://ffmpeg.org/), version 9.0.2: the libavcodec and libavutil libraries,
+configured with only the MPEG-2 video decoder (mpeg2video) and the MPEG video
+parser enabled. FFmpeg is licensed under the GNU Lesser General Public License,
+version 2.1 or later. It is built without --enable-gpl and --enable-nonfree,
+and it is linked dynamically as separate frameworks (avcodec.framework and
+avutil.framework). The macOS version does not include FFmpeg.
+
+  - Source code: the unmodified ffmpeg-9.0.2.tar.xz is attached to each GitHub
+    Release that includes the iOS / iPadOS version, next to the IPA. It is the
+    same file as https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+    (SHA-256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
+  - How it is built: scripts/build-ffmpeg-ios.sh in this repository
+  - The full text of the license (COPYING.LGPLv2.1 from the FFmpeg source code)
+    is included in the app as FFmpeg-COPYING.LGPLv2.1.txt, and in this
+    repository at Sources/iOSApp/Licenses/FFmpeg-COPYING.LGPLv2.1.txt.
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.

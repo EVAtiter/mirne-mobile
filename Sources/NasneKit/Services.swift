@@ -49,11 +49,18 @@ public protocol ScheduleService: Sendable {
     func delete(id: String) async throws
 }
 
-/// 録画の一覧（xsrs を主に、DIDL で補う。画面は結合した形だけを見る）と、録画の削除
+/// 録画の一覧（xsrs を主に、DIDL で補う。画面は結合した形だけを見る）と、録画の削除・保護の切り替え
 public protocol TitleCatalogService: Sendable {
     func titles(withMetadata: Bool) async throws -> [RecordedTitle]
     /// 録画を消す。ID は一覧の ID（xsrs の item id）。自動で再試行しない。送るとすぐ一覧から消える（2026-11-21 実機）
     func deleteTitle(id: String) async throws
+    /// 録画の保護を切り替える。送る直前に一覧を読み直し、その録画の item を受け取ったまま保護の印だけ変えて送り返す。
+    /// 一覧に無ければ送らない。自動で再試行しない
+    func setProtection(id: String, protect: Bool) async throws
+    /// 録画 1 件の番組の情報（DIDL）。返らなければ nil
+    func titleMetadata(id: String) async throws -> DIDLItem?
+    /// 録画のチャプターの点（録画の頭からの秒）。確かめを通らない・2 点に満たなければ空
+    func chapters(id: String, durationSeconds: Int) async throws -> [Double]
 }
 
 extension TitleCatalogService {
@@ -93,6 +100,12 @@ public protocol LiveCatalogService: Sendable {
     func channels(broadcastingType: Int) async throws -> [LiveChannel]
 }
 
+/// 録画の再開位置の書き戻し（書き込み。自動で再試行しない）
+public protocol ResumePositionService: Sendable {
+    /// 再開位置を書く（録画の頭からの秒。0 は再開位置を消す）
+    func setResumePosition(id: String, seconds: Double) async throws
+}
+
 // MARK: - 中身の型の適合
 
 extension WebAPIRegistrationService: RegistrationService {}
@@ -100,6 +113,7 @@ extension WebAPIDeviceInfoService: DeviceInfoService {}
 extension RecordingCatalogService: ScheduleService, TitleCatalogService {}
 extension WebAPIProgramGuideService: ProgramGuideService {}
 extension DLNALiveCatalogService: LiveCatalogService {}
+extension WebAPIResumePositionService: ResumePositionService {}
 
 // MARK: - 組み立て（起動時の 1 か所。試験ではモックに差し替える）
 
@@ -111,7 +125,8 @@ public struct DeviceSetupServices: Sendable {
     public let describe: @Sendable (String) async throws -> NasneDevice
     public let registration: any RegistrationService
     /// 記述の UDN が同じ nasne を探し直す（アドレスが変わったとき）。見つからなければ nil。
-    /// SSDP だけを使う（/24 の走査は利用者が選んだときだけの決まりなので、自動の探し直しでは使わない）
+    /// SSDP で探す（macOS では /24 の走査は利用者が選んだときだけの決まりなので、自動の探し直しでは使わない）。
+    /// SSDP を使わない組み立て（iPad）では、/24 を走査して探す
     public let relocate: @Sendable (String) async throws -> NasneDevice?
     /// 今のアドレスに届くかの確かめ（PINVerify）。ふだんの頼みより短い時間切れで、届かないと早く分かるようにする
     public let checkConnection: any RegistrationService
@@ -130,19 +145,27 @@ public struct DeviceSetupServices: Sendable {
         self.checkConnection = checkConnection ?? registration
     }
 
-    /// 実機に向けた組み立て
+    /// 実機に向けた組み立て。
+    /// `usesSSDP` が false なら SSDP を使わず、/24 の走査だけで探す（iOS はマルチキャストのエンタイトルメントが無いと
+    /// SSDP を送れない。そのとき自動で探す方法も、アドレスが変わったときの探し直しも走査になる）
     public static func live(client: any HTTPExchanging,
-                            scanClient: any HTTPExchanging = URLSessionHTTPClient(timeout: SubnetScanDiscoveryService.probeTimeout))
+                            scanClient: any HTTPExchanging = URLSessionHTTPClient(timeout: SubnetScanDiscoveryService.probeTimeout),
+                            usesSSDP: Bool = true)
         -> DeviceSetupServices {
         // 登録の前は機種が分からないので、走査・記述・届くかの確かめは標準の表で頼む。登録は記述の機種に合う表で頼む
         let profile = NasneProfiles.standard
         let describer = DeviceDescriber(client: client, profile: profile)
         let ssdp = SSDPDiscoveryService(client: client)
+        let scan = SubnetScanDiscoveryService(client: scanClient, describeClient: client, profile: profile)
         return DeviceSetupServices(
-            discovery: [ssdp, SubnetScanDiscoveryService(client: scanClient, describeClient: client, profile: profile)],
+            discovery: usesSSDP ? [ssdp, scan] : [scan],
             describe: { try await describer.describe(host: $0) },
             registration: WebAPIRegistrationService(client: client),
-            relocate: { try await ssdp.discover(udn: $0).first },
+            relocate: { udn in
+                if usesSSDP { return try await ssdp.discover(udn: udn).first }
+                // SSDP を送れない（iPad）ときは /24 を走査して、記述の UDN が同じ nasne を探す
+                return try await scan.discover().first { $0.udn == udn }
+            },
             checkConnection: WebAPIRegistrationService(client: URLSessionHTTPClient(timeout: connectionCheckTimeout),
                                                        profile: profile))
     }
@@ -156,15 +179,19 @@ public struct NasneServices: Sendable {
     public let titles: any TitleCatalogService
     public let programGuide: any ProgramGuideService
     public let liveCatalog: any LiveCatalogService
+    /// 再開位置の書き戻し（無ければ書き戻さない。試験）
+    public let resumePositions: (any ResumePositionService)?
 
     public init(registration: RegisteredNasne, deviceInfo: any DeviceInfoService, schedules: any ScheduleService,
-                titles: any TitleCatalogService, programGuide: any ProgramGuideService, liveCatalog: any LiveCatalogService) {
+                titles: any TitleCatalogService, programGuide: any ProgramGuideService, liveCatalog: any LiveCatalogService,
+                resumePositions: (any ResumePositionService)? = nil) {
         self.registration = registration
         self.deviceInfo = deviceInfo
         self.schedules = schedules
         self.titles = titles
         self.programGuide = programGuide
         self.liveCatalog = liveCatalog
+        self.resumePositions = resumePositions
     }
 
     /// 実機に向けた組み立て。control URL は記述（`device`）から解く。
@@ -180,6 +207,7 @@ public struct NasneServices: Sendable {
             schedules: catalog,
             titles: catalog,
             programGuide: WebAPIProgramGuideService(transport: webAPI, tokens: try registration.tokenProvider()),
-            liveCatalog: DLNALiveCatalogService(catalog: catalog))
+            liveCatalog: DLNALiveCatalogService(catalog: catalog),
+            resumePositions: WebAPIResumePositionService(transport: webAPI))
     }
 }

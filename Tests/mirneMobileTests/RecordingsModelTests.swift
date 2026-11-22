@@ -542,3 +542,207 @@ struct RecordingDeletionTests {
         #expect(RecordingDeletion.blocker(other, isShowingSavedList: false) == nil)
     }
 }
+
+/// 録画の保護の試験の偽の nasne：X_UpdateTitle を受けたら、送られた item の保護の印を次からの一覧に載せる（`applies` が偽なら載せない）
+private final class ProtectingNasne: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flags: [String: String] = [:]
+    private let applies: Bool
+    let http: MockHTTP
+
+    init(applies: Bool = true, updateStatus: Int = 200) {
+        self.applies = applies
+        http = catalogHTTP()
+        let list = NasneFixture.text("soap/title_list.xml")
+        http.respond("/XSRS", method: "POST") { [self] request in
+            let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            if body.contains("X_UpdateTitle") {
+                guard updateStatus == 200 else {
+                    return MockHTTP.Reply(status: updateStatus, body: NasneFixture.data("soap/conflict_fault.xml"))
+                }
+                if self.applies, let id = Self.capture(body, after: "&lt;item id=\"", before: "\""),
+                   let flag = Self.capture(body, after: "&lt;titleProtectFlag&gt;", before: "&lt;") {
+                    lock.withLock { flags[id] = flag }
+                }
+                return MockHTTP.Reply(status: 200, body: Data("""
+                    <?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>\
+                    <u:X_UpdateTitleResponse xmlns:u="urn:schemas-xsrs-org:service:X_ScheduledRecording:2"><Result></Result>\
+                    </u:X_UpdateTitleResponse></s:Body></s:Envelope>
+                    """.utf8))
+            }
+            return MockHTTP.Reply(status: 200, body: Data(Self.list(list, flags: lock.withLock { flags }).utf8))
+        }
+    }
+
+    static func capture(_ text: String, after open: String, before close: String) -> String? {
+        guard let start = text.range(of: open), let end = text.range(of: close, range: start.upperBound..<text.endIndex) else { return nil }
+        return String(text[start.upperBound..<end.lowerBound])
+    }
+
+    /// 素材の一覧の、その録画の item の保護の印を書き換える
+    static func list(_ text: String, flags: [String: String]) -> String {
+        var text = text
+        for (id, flag) in flags {
+            guard let start = text.range(of: "&lt;item id=&quot;\(id)&quot;&gt;"),
+                  let end = text.range(of: "&lt;/item&gt;", range: start.upperBound..<text.endIndex),
+                  let old = text.range(of: "&lt;titleProtectFlag&gt;0&lt;/titleProtectFlag&gt;", range: start.upperBound..<end.lowerBound)
+                    ?? text.range(of: "&lt;titleProtectFlag&gt;1&lt;/titleProtectFlag&gt;", range: start.upperBound..<end.lowerBound)
+            else { continue }
+            text.replaceSubrange(old, with: "&lt;titleProtectFlag&gt;\(flag)&lt;/titleProtectFlag&gt;")
+        }
+        return text
+    }
+
+    /// 送った X_UpdateTitle の本文
+    var updateRequests: [String] {
+        http.sentRequests.map { String(decoding: $0.httpBody ?? Data(), as: UTF8.self) }.filter { $0.contains("X_UpdateTitle") }
+    }
+}
+
+@MainActor
+@Suite("録画の保護の切り替え")
+struct RecordingProtectionTests {
+    @Test("一覧の item を受け取ったまま保護の印だけ変えて 1 回送り、読み直した一覧で保護が付く。外すのも同じ")
+    func protectsAndUnprotects() async throws {
+        let nasne = ProtectingNasne()
+        let model = RecordingsModel(services: try services(nasne.http))
+        await model.reload()
+        let target = try #require(model.titles.value?.first)
+        #expect(!target.isProtected)
+        #expect(model.protectionBlocker(target) == nil)
+
+        #expect(await model.setProtection(target, protect: true) == nil)
+        #expect(nasne.updateRequests.count == 1)
+        let sent = nasne.updateRequests[0]
+        #expect(sent.contains("&lt;item id=\"\(target.id)\"&gt;"))
+        #expect(sent.contains("&lt;titleProtectFlag&gt;1&lt;/titleProtectFlag&gt;"))
+        // 保護の印のほかは、一覧で受け取ったまま（属性も）
+        #expect(sent.contains("&lt;portableRecordFile target=\"MOB\" transferPath=\"IP\"&gt;"))
+        #expect(sent.contains("&lt;recordSize&gt;521&lt;/recordSize&gt;"))
+        let protected = try #require(model.titles.value?.first { $0.id == target.id })
+        #expect(protected.isProtected)
+        #expect(model.protectingID == nil)
+        // 保護した録画は消せない
+        #expect(model.deletionBlocker(protected) == .protected)
+
+        #expect(await model.setProtection(protected, protect: false) == nil)
+        try #require(nasne.updateRequests.count == 2)
+        #expect(nasne.updateRequests[1].contains("&lt;titleProtectFlag&gt;0&lt;/titleProtectFlag&gt;"))
+        #expect(model.titles.value?.first { $0.id == target.id }?.isProtected == false)
+    }
+
+    @Test("受け付けられても一覧の保護の印が変わらなければ、変わっていないと知らせる")
+    func unchanged() async throws {
+        let nasne = ProtectingNasne(applies: false)
+        let model = RecordingsModel(services: try services(nasne.http))
+        await model.reload()
+        let target = try #require(model.titles.value?.first)
+        #expect(await model.setProtection(target, protect: true) == RecordingProtection.unchanged)
+        #expect(model.titles.value?.first { $0.id == target.id }?.isProtected == false)
+    }
+
+    @Test("断られたら誤りを返し（再試行しない）、一覧の保護の印は変えない")
+    func refused() async throws {
+        let nasne = ProtectingNasne(updateStatus: 500)
+        let model = RecordingsModel(services: try services(nasne.http))
+        await model.reload()
+        let target = try #require(model.titles.value?.first)
+        let error = await model.setProtection(target, protect: true)
+        #expect(error != nil)
+        #expect(nasne.updateRequests.count == 1)
+        #expect(model.titles.value?.first { $0.id == target.id }?.isProtected == false)
+    }
+
+    @Test("録画中の録画・保存した一覧の間・今と同じ状態には送らない。削除や切り替えの途中も待つ")
+    func blockers() async throws {
+        let nasne = ProtectingNasne()
+        let model = RecordingsModel(services: try services(nasne.http))
+        await model.reload()
+        var recording = try #require(model.titles.value?.first)
+        recording.isRecording = true
+        #expect(model.protectionBlocker(recording) == .recording)
+        #expect(await model.setProtection(recording, protect: true) == nil)
+        let target = try #require(model.titles.value?.first)
+        #expect(await model.setProtection(target, protect: false) == nil)
+        #expect(nasne.updateRequests.isEmpty)
+        #expect(RecordingProtection.blocker(target, isShowingSavedList: true) == .savedList)
+        #expect(RecordingProtection.blocker(target, isShowingSavedList: false, isDeleting: true) == .deleting)
+        #expect(RecordingProtection.blocker(target, isShowingSavedList: false, isProtecting: true) == .protecting)
+        #expect(RecordingProtection.blocker(target, isShowingSavedList: false, isRefreshing: true) == .refreshing)
+        // 保護した録画も、保護を外すことはできる（削除と違って保護は理由にならない）
+        var protected = target
+        protected.isProtected = true
+        #expect(RecordingProtection.blocker(protected, isShowingSavedList: false) == nil)
+        #expect(RecordingDeletion.blocker(target, isShowingSavedList: false, isProtecting: true) == .protecting)
+    }
+}
+
+@MainActor
+@Suite("録画一覧の 2 段の取り直し")
+struct RecordingListMergeTests {
+    /// 架空の録画（xsrs の値だけ。`resources` を足すと番組の情報を持つ形になる）
+    private func title(_ id: String, start: String = "2026-01-05T21:00:00+09:00", protected: Bool = false,
+                       serviceID: Int = 0x4010) throws -> RecordedTitle {
+        try RecordedTitle(item: XSRSItem(id: id, fields: ["title": "架空番組\(id)", "scheduledStartDateTime": start,
+                                                          "scheduledChannelID": String(format: "0x%04x", serviceID),
+                                                          "titleProtectFlag": protected ? "1" : "0"],
+                                         attributes: ["scheduledChannelID": ["broadcastingType": "2", "channelType": "2"]]),
+                          source: "test")
+    }
+
+    private func withMetadata(_ title: RecordedTitle, description: String) throws -> RecordedTitle {
+        var copy = title
+        copy.description = description
+        copy.channelName = "保存した局名"
+        copy.resources = try #require(try DIDLItem.parseDocument(NasneFixture.text("dlna/browse_0_video_all.xml"), source: "test").first).resources
+        return copy
+    }
+
+    private let channels = [Channel(broadcastingType: 2, networkID: 0x7E01, transportStreamID: 0x7E01, serviceID: 0x4020,
+                                    serviceType: Channel.televisionServiceType, channelNumber: 1, serviceName: "テスト局",
+                                    remoteControlKeyID: 1)]
+
+    @Test("1 段目：消えた録画を外し、前からある録画は番組の情報を引き継いで nasne の値に直し、新しい録画は局名を引いて補う印を付ける")
+    func merge() throws {
+        let kept = try withMetadata(try title("1"), description: "説明1")
+        let gone = try withMetadata(try title("2"), description: "説明2")
+        let reused = try withMetadata(try title("3"), description: "説明3")
+        let listed = [try title("1", protected: true), try title("3", start: "2026-02-01T21:00:00+09:00"),
+                      try title("4", serviceID: 0x4020)]
+        let merged = RecordingListMerge.merge(shown: [kept, gone, reused], listed: listed, channels: channels)
+        #expect(merged.titles.map(\.id) == ["1", "3", "4"])
+        #expect(merged.titles[0].isProtected)
+        #expect(merged.titles[0].description == "説明1")
+        #expect(merged.titles[0].resources == kept.resources)
+        // 同じ ID でも録り始めが違えば別の録画（引き継がない）
+        #expect(merged.titles[1].description == nil)
+        #expect(merged.titles[2].channelName == "テスト局")
+        #expect(merged.needsMetadata == ["3", "4"])
+    }
+
+    @Test("2 段目：番組の情報から入る項目だけを足し込み、保護などは出している一覧のまま。読み込みの間に増えた録画は後ろに足す")
+    func completing() throws {
+        let shown = [try title("1", protected: true), try title("2")]
+        let full = [try withMetadata(try title("1", protected: false), description: "説明1"), try withMetadata(try title("5"), description: "説明5")]
+        let list = RecordingListMerge.completing(shown: shown, withMetadataFrom: full)
+        #expect(list.map(\.id) == ["1", "2", "5"])
+        #expect(list[0].isProtected)
+        #expect(list[0].description == "説明1")
+        #expect(list[1].description == nil)
+    }
+
+    @Test("1 段目だけで返す読み直し：新しい録画は 1 件ずつ番組の情報（BrowseMetadata）で補い、再生できる")
+    func firstStageFillsNewTitles() async throws {
+        let http = catalogHTTP()
+        let model = RecordingsModel(services: try services(http))
+        await model.reload(waitsForMetadata: false)
+        let list = try #require(model.titles.value)
+        #expect(list.count == 2)
+        #expect(list.allSatisfy { !$0.resources.isEmpty })
+        #expect(model.canPlay)
+        let metadataRequests = http.sentRequests.map { String(decoding: $0.httpBody ?? Data(), as: UTF8.self) }
+            .filter { $0.contains("<BrowseFlag>BrowseMetadata</BrowseFlag>") }
+        #expect(metadataRequests.count == 2)
+        #expect(metadataRequests.contains { $0.contains("<ObjectID>0/video/all/pvr?id=\(list[0].id)</ObjectID>") })
+    }
+}

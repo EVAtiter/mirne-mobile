@@ -7,6 +7,7 @@ options:
   bundleIdPrefix: com.slack-kingdom
   deploymentTarget:
     macOS: "15.0"
+    iOS: "18.0"
   xcodeVersion: "27"
   createIntermediateGroups: true
   defaultConfig: Debug
@@ -23,8 +24,8 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
     # 版とビルド番号はここだけに書く（Info.plist は $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) で参照する）
-    MARKETING_VERSION: "1.0.1"
-    CURRENT_PROJECT_VERSION: "8"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "9"
   configs:
     # xcodegen は #if DEBUG 用の DEBUG を自動定義しないので明示する
     Debug:
@@ -46,10 +47,58 @@ targetTemplates:
       - path: Sources/TSPipeline
       - path: Sources/SI
       - path: Sources/Player
+        # OS ごとに分かれるファイルは、ターゲットごとに取り込む（PlayerMacOS・PlayerIOS）
+        excludes:
+          - "macOS/**"
+          - "iOS/**"
       # 画面に出す形への変換（誤りの文言など）。AppKit・SwiftUI に依存させない
       - path: Sources/Presentation
       # 録画の再生（DTCPKit と再生系をつなぐ。AppKit に依存させない）
       - path: Sources/Playback
+
+  # 画面の層のうち macOS と iPad で共有するもの（組み立て・字幕の重ね出しなど）。OS ごとの部分は UIMacOS・UIIOS
+  UIShared:
+    sources:
+      - path: Sources/UI
+        excludes:
+          - "macOS/**"
+          - "iOS/**"
+  UIMacOS:
+    sources:
+      - path: Sources/UI/macOS
+  UIIOS:
+    sources:
+      - path: Sources/UI/iOS
+
+  # Player の中の OS ごとのファイル（映像を出すビューなど）
+  PlayerMacOS:
+    sources:
+      - path: Sources/Player/macOS
+  PlayerIOS:
+    sources:
+      - path: Sources/Player/iOS
+    # MPEG-2 は FFmpeg（mpeg2video だけ・LGPL-2.1）で復号する。組む前なら、ビルドの前に scripts/build-ffmpeg-ios.sh が
+    # ffmpeg.org から版を固定して取り、build/ffmpeg に組む（git には入れない）。動的なフレームワークで同梱する
+    preBuildScripts:
+      - name: FFmpeg を組む（組む前・設定が変わったときだけ）
+        script: |
+          "${SRCROOT}/scripts/build-ffmpeg-ios.sh" --if-missing
+        basedOnDependencyAnalysis: false
+    # 同梱はビルドの後の段で写して署名する（xcframework として登録すると、組む前の状態からビルドできない）
+    postBuildScripts:
+      - name: FFmpeg のフレームワークを同梱する
+        script: |
+          "${SRCROOT}/scripts/embed-ffmpeg-ios.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        # 組む段はネットワークと build/ への書き込みが要る
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Sources/CFFmpegMPEG2
+        OTHER_SWIFT_FLAGS: -Xcc -I$(SRCROOT)/build/ffmpeg/include
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]": $(SRCROOT)/build/ffmpeg/frameworks/iphoneos
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]": $(SRCROOT)/build/ffmpeg/frameworks/iphonesimulator
+        OTHER_LDFLAGS: $(inherited) -framework avcodec -framework avutil
 
 targets:
   mirne-mobile:
@@ -57,6 +106,9 @@ targets:
     platform: macOS
     templates:
       - CoreSources
+      - PlayerMacOS
+      - UIShared
+      - UIMacOS
     sources:
       - path: Sources/App
         excludes:
@@ -85,6 +137,7 @@ targets:
     platform: macOS
     templates:
       - CoreSources
+      - PlayerMacOS
     sources:
       - path: Sources/Probe
     configFiles:
@@ -102,6 +155,7 @@ targets:
     platform: macOS
     templates:
       - CoreSources
+      - PlayerMacOS
     sources:
       - path: Tests/mirneMobileTests
         excludes:
@@ -114,6 +168,66 @@ targets:
         PRODUCT_NAME: mirneMobileTests
         PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirneMobileTests
         INFOPLIST_FILE: Tests/mirneMobileTests/Info.plist
+
+  # iPad 版（iOS / iPadOS）。共有の部品はそのまま取り込み、画面は Sources/iOSApp に置く
+  mirne-mobile-iOS:
+    type: application
+    platform: iOS
+    templates:
+      - CoreSources
+      - PlayerIOS
+      - UIShared
+      - UIIOS
+    sources:
+      # 画面・Info.plist・アイコン（Assets.xcassets。scripts/make-icon.sh ios で作る）・FFmpeg の LGPL-2.1 の全文（Licenses）
+      - path: Sources/iOSApp
+        excludes:
+          - "**/.DS_Store"
+          - "Info.plist"
+      # 配る IPA に NOTICE（同梱した部品と FFmpeg のソースの在りか）を入れる
+      - path: NOTICE
+        buildPhase: resources
+    configFiles:
+      Debug: Config/iOS.xcconfig
+      Release: Config/iOS.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: mirne mobile
+        # アイコン（iOS は Asset Catalog だけが経路。1024px の 1 枚）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # macOS 版と同じ Bundle ID（OS が違えば同じでよい）
+        PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirne-mobile
+        INFOPLIST_FILE: Sources/iOSApp/Info.plist
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        # 最初の版は iPad だけ
+        TARGETED_DEVICE_FAMILY: "2"
+        SKIP_INSTALL: NO
+
+  # 共有の部品の単体試験を iOS のシミュレータで流す（試験の中身は macOS と同じ）
+  mirneMobileTests-iOS:
+    type: bundle.unit-test
+    platform: iOS
+    templates:
+      - CoreSources
+      - PlayerIOS
+    sources:
+      - path: Tests/mirneMobileTests
+        excludes:
+          - "Info.plist"
+      # iOS だけの試験（FFmpeg の復号など）
+      - path: Tests/iOS
+    configFiles:
+      Debug: Config/iOS.xcconfig
+      Release: Config/iOS.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: mirneMobileTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirneMobileTests
+        GENERATE_INFOPLIST_FILE: YES
+        # 試験のバンドルの中に同梱した FFmpeg のフレームワークを見つける
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/Frameworks"
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        TARGETED_DEVICE_FAMILY: "2"
 
 schemes:
   mirne-mobile:
@@ -134,3 +248,15 @@ schemes:
         mirne-mobile-probe: all
     run:
       config: Debug
+  mirne-mobile-iOS:
+    build:
+      targets:
+        mirne-mobile-iOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - mirneMobileTests-iOS
+    archive:
+      config: Release

@@ -1,0 +1,8 @@
+// iPad 版（iOS / iPadOS）の署名の設定。
+// 共通の既定（Base.xcconfig と手元の Local.xcconfig）を読んだうえで、実機に入れられる署名に替える。
+// チームは Local.xcconfig の DEVELOPMENT_TEAM を使う（無ければシミュレータ向けにだけビルドできる）
+
+#include "Base.xcconfig"
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development

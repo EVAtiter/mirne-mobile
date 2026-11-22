@@ -118,8 +118,8 @@ public protocol PlaybackService: AnyObject {
     var displaySeconds: Double? { get }
     /// スリープの前に受信と接続を閉じ、一時停止にする（再開を押したら、止めた位置から張り直す）
     func suspendForSleep()
-    /// いまの位置を止めどころとして知らせる（この再生で一度でも始まっていれば）
-    func recordCheckpoint()
+    /// いまの位置を止めどころとして知らせる（この再生で一度でも始まっていれば）。`occasion` は知らせる時機
+    func recordCheckpoint(_ occasion: PlaybackCheckpoint.Occasion)
     var volume: Float { get set }
     var isMuted: Bool { get set }
 }

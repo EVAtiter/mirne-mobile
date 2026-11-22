@@ -50,12 +50,20 @@ public final class RecordingsModel {
     public private(set) var fetchedAt: Date?
     /// 出している一覧が保存した一覧で、この起動ではまだ nasne から取り直せていないか（その間は再生させない）
     public private(set) var isShowingSavedList = false
-    /// nasne から取り直している途中か
+    /// nasne から録画一覧を取り直している途中か（1 段目。この間は再生・削除・保護を待つ）
     public private(set) var isRefreshing = false
+    /// 全件の番組の情報を裏で読んでいる途中か（2 段目。一覧は使える）
+    public private(set) var isCompletingMetadata = false
+    /// 2 段目の読み込み（読み直したら捨てる）
+    @ObservationIgnored private var metadataTask: Task<Void, Never>?
+    /// 読み直した回数（古い 2 段目の結果を使わないため）
+    @ObservationIgnored private var metadataGeneration = 0
     /// 一覧を出したまま取り直しに失敗したときの誤り（届かないなど）。取り直せたら消える
     public private(set) var refreshError: ErrorPresentation?
     /// 削除している録画の ID（送ってから一覧を読み直し終えるまで。2026-11-21 で行と下の欄に出す）
     public private(set) var deletingID: RecordedTitle.ID?
+    /// 保護を切り替えている録画の ID（送ってから一覧を読み直し終えるまで）
+    public private(set) var protectingID: RecordedTitle.ID?
 
     private let services: NasneServices
     /// 局の一覧（ほかの画面と共通。並べ替えの局の順に使う）
@@ -164,14 +172,24 @@ public final class RecordingsModel {
         return titles.value?.first { $0.id == selectedID }
     }
 
-    /// 読み込み直す（選んでいた録画は、まだあれば選んだまま）。
+    /// 読み込み直す（選んでいた録画は、まだあれば選んだまま）。2 段に分ける：
     ///
-    /// 一覧をまだ出していなければ、保存した一覧があればそれを先に出す。nasne から取り直せたら、その一覧を正として差し替えて保存する。
-    /// 一覧を出したまま取り直しに失敗したら、一覧はそのままにして `refreshError` を立てる（出していなければ失敗を出す）
-    public func reload() async {
+    /// 1. 録画一覧（`X_GetTitleList`。約 0.5 秒）だけを読み、出している一覧と突き合わせる（`RecordingListMerge`）。消えた録画を外し、
+    ///    前からある録画は番組の情報（説明・ジャンル・再生の在りかなど）を保存した値のまま、保護・新着・録画中・続きの位置を nasne の値に直す。
+    ///    新しい録画は、`metadataByItemLimit` 件までなら 1 件ずつ番組の情報を読んで補う。ここで一覧を正として保存し、再生・削除・保護を許す
+    ///    （保存した再生の在りかは時間が経っても変わらなかった。2026-11-22・Buffalo 製で 3.2 時間）
+    /// 2. 裏で全件の番組の情報（Browse。約 11 秒）を読み、番組の情報から入る項目だけを足し込んで保存する（`isCompletingMetadata`）。
+    ///    この間に変えた保護などを、古い値で上書きしない。失敗しても知らせない（1 段目の一覧のまま）
+    ///
+    /// 一覧をまだ出していなければ、保存した一覧があればそれを先に出す。1 段目に失敗したら、一覧はそのままにして `refreshError` を立てる
+    /// （出していなければ失敗を出す）。`waitsForMetadata` が偽なら 2 段目を待たずに返る（削除の後の読み直し）
+    public func reload(waitsForMetadata: Bool = true) async {
         guard !isRefreshing else { return }
+        // 走っている 2 段目は捨てる（結果を使わない）
+        metadataGeneration += 1
+        metadataTask?.cancel()
+        isCompletingMetadata = false
         isRefreshing = true
-        defer { isRefreshing = false }
         let udn = services.registration.udn
         if titles.value == nil {
             if let saved = await library?.titleList(udn: udn) {
@@ -183,9 +201,12 @@ public final class RecordingsModel {
                 titles = .loading
             }
         }
-        // 件数と上限・局の並びは、取れなくても一覧は出す。局の一覧はほかの画面と共通で、読み直すとほかの画面も新しくなる
-        // （読み直しに失敗したら前の一覧のまま）
-        let freshCounts = try? await services.deviceInfo.titleCounts()
+        // 件数と上限・局の一覧・録画一覧を同時に読む。件数と局の並びは、取れなくても一覧は出す。
+        // 局の一覧はほかの画面と共通で、読み直すとほかの画面も新しくなる（読み直しに失敗したら前の一覧のまま）
+        let catalog = services.titles
+        let deviceInfo = services.deviceInfo
+        async let countsResult = try? deviceInfo.titleCounts()
+        let listing = Task { try await catalog.titles(withMetadata: false) }
         await channelCatalog.load(reload: true)
         if let channels = channelCatalog.channels.value {
             var order: [Int: Int] = [:]
@@ -195,15 +216,26 @@ public final class RecordingsModel {
             }
             channelOrder = order
         }
+        let freshCounts = await countsResult
         do {
-            let fresh = try await services.titles.titles()
+            let listed = try await listing.value
+            let merged = RecordingListMerge.merge(shown: titles.value ?? [], listed: listed,
+                                                  channels: channelCatalog.channels.value ?? [])
+            var list = merged.titles
+            if merged.needsMetadata.count <= Self.metadataByItemLimit {
+                for id in merged.needsMetadata {
+                    guard let index = list.firstIndex(where: { $0.id == id }),
+                          let didl = try? await catalog.titleMetadata(id: id) else { continue }
+                    list[index] = list[index].merging(didl)
+                }
+            }
             let fetched = now()
-            titles = .loaded(fresh)
+            titles = .loaded(list)
             fetchedAt = fetched
             counts = freshCounts
             isShowingSavedList = false
             refreshError = nil
-            await library?.saveTitleList(SavedTitleList(titles: fresh, fetchedAt: fetched, counts: freshCounts), udn: udn)
+            await library?.saveTitleList(SavedTitleList(titles: list, fetchedAt: fetched, counts: freshCounts), udn: udn)
         } catch {
             let presented = ErrorText.present(error)
             if titles.value != nil {
@@ -211,7 +243,42 @@ public final class RecordingsModel {
             } else {
                 titles = .failed(presented)
             }
+            dropMissingSelection()
+            isRefreshing = false
+            return
         }
+        dropMissingSelection()
+        isRefreshing = false
+
+        // 2 段目：全件の番組の情報
+        let generation = metadataGeneration
+        isCompletingMetadata = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.completeMetadata(generation: generation)
+        }
+        metadataTask = task
+        if waitsForMetadata { await task.value }
+    }
+
+    /// 新しい録画を 1 件ずつ番組の情報で補う上限（これより多ければ、2 段目の全件の読み込みを待つ。保存した一覧の無い初回など）
+    static let metadataByItemLimit = 20
+
+    /// 2 段目：全件の番組の情報を読み、出している一覧に番組の情報から入る項目だけを足し込んで保存する。
+    /// その間に一覧を読み直した（`generation` が進んだ）なら使わない
+    private func completeMetadata(generation: Int) async {
+        defer { if generation == metadataGeneration { isCompletingMetadata = false } }
+        guard let full = try? await services.titles.titles(withMetadata: true),
+              generation == metadataGeneration, !Task.isCancelled, let shown = titles.value else { return }
+        let list = RecordingListMerge.completing(shown: shown, withMetadataFrom: full)
+        titles = .loaded(list)
+        if let fetchedAt {
+            await library?.saveTitleList(SavedTitleList(titles: list, fetchedAt: fetchedAt, counts: counts), udn: services.registration.udn)
+        }
+    }
+
+    /// 選んでいた録画が一覧から消えたら、選択を外す
+    private func dropMissingSelection() {
         if let selectedID, titles.value?.contains(where: { $0.id == selectedID }) != true {
             self.selectedID = nil
         }
@@ -220,7 +287,48 @@ public final class RecordingsModel {
     /// 録画を消せないときの理由（消せるなら nil）
     public func deletionBlocker(_ title: RecordedTitle) -> RecordingDeletion.Blocker? {
         RecordingDeletion.blocker(title, isShowingSavedList: isShowingSavedList, isDeleting: deletingID != nil,
-                                  isRefreshing: isRefreshing)
+                                  isProtecting: protectingID != nil, isRefreshing: isRefreshing)
+    }
+
+    /// 保護を切り替えられないときの理由（切り替えられるなら nil）
+    public func protectionBlocker(_ title: RecordedTitle) -> RecordingProtection.Blocker? {
+        RecordingProtection.blocker(title, isShowingSavedList: isShowingSavedList, isDeleting: deletingID != nil,
+                                    isProtecting: protectingID != nil, isRefreshing: isRefreshing)
+    }
+
+    /// 録画の保護を切り替える（`protect` が真なら保護する）。自動で再試行しない。
+    /// 送った後は録画の一覧（`X_GetTitleList`。番組の情報の Browse は読まない。約 0.5 秒）を読み直し、保護の印が変わったことを確かめて、
+    /// 出している一覧と保存した一覧のその録画だけを直す。届かなかったときも、変わっているかもしれないので読み直す
+    public func setProtection(_ title: RecordedTitle, protect: Bool) async -> ErrorPresentation? {
+        guard protectionBlocker(title) == nil, title.isProtected != protect else { return nil }
+        protectingID = title.id
+        defer { protectingID = nil }
+        var failure: ErrorPresentation?
+        do {
+            try await services.titles.setProtection(id: title.id, protect: protect)
+        } catch {
+            failure = ErrorText.present(error)
+        }
+        let listed: RecordedTitle?
+        do {
+            listed = try await services.titles.titles(withMetadata: false).first { $0.id == title.id }
+        } catch {
+            return failure ?? ErrorText.present(error)
+        }
+        if let listed { await applyProtection(listed.isProtected, to: title.id) }
+        if let failure { return failure }
+        guard let listed else { return RecordingProtection.notListed }
+        return listed.isProtected == protect ? nil : RecordingProtection.unchanged
+    }
+
+    /// 出している一覧と保存した一覧の、その録画の保護の印だけを直す
+    private func applyProtection(_ isProtected: Bool, to id: RecordedTitle.ID) async {
+        guard var list = titles.value, let index = list.firstIndex(where: { $0.id == id }),
+              list[index].isProtected != isProtected else { return }
+        list[index].isProtected = isProtected
+        titles = .loaded(list)
+        guard !isShowingSavedList, let fetchedAt else { return }
+        await library?.saveTitleList(SavedTitleList(titles: list, fetchedAt: fetchedAt, counts: counts), udn: services.registration.udn)
     }
 
     /// 録画を 1 件消す（確かめと、再生していれば先に止めるのは画面が行う）。自動で再試行しない。
@@ -236,11 +344,51 @@ public final class RecordingsModel {
         } catch {
             failure = ErrorText.present(error)
         }
-        await reload()
+        // 消えたかは録画一覧（1 段目）で確かめる。全件の番組の情報は待たない
+        await reload(waitsForMetadata: false)
         if let failure { return failure }
         if let refreshError { return refreshError }
         if titles.value?.contains(where: { $0.id == title.id }) == true { return RecordingDeletion.stillListed }
         return nil
+    }
+}
+
+/// 録画一覧の突き合わせ（2 段の取り直し。純粋な関数で、試験する）
+public enum RecordingListMerge {
+    /// 1 段目：録画一覧（xsrs だけ）を、出している一覧と突き合わせる。並びは録画一覧のまま。
+    /// 前からある録画（ID と録り始めの日時が同じ）は番組の情報から入る項目を引き継ぐ。新しい録画は局名を番組表の局の一覧から引く。
+    /// 番組の情報を補う録画（新しい録画と、前から再生の在りかが無かった録画）の ID も返す
+    public static func merge(shown: [RecordedTitle], listed: [RecordedTitle], channels: [Channel])
+        -> (titles: [RecordedTitle], needsMetadata: [RecordedTitle.ID]) {
+        let byID = Dictionary(shown.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var needsMetadata: [RecordedTitle.ID] = []
+        let titles = listed.map { title -> RecordedTitle in
+            if let saved = byID[title.id], saved.start == title.start {
+                if saved.resources.isEmpty { needsMetadata.append(title.id) }
+                return title.keepingMetadata(of: saved)
+            }
+            needsMetadata.append(title.id)
+            var added = title
+            if let channel = title.channel {
+                added.channelName = channels.first {
+                    $0.serviceID == channel.serviceID && $0.broadcastingType == channel.broadcastingType
+                }?.serviceName
+            }
+            return added
+        }
+        return (titles, needsMetadata)
+    }
+
+    /// 2 段目：出している一覧に、全件の読み込みの番組の情報から入る項目だけを足し込む。並びと、保護などの nasne の値は出している一覧のまま。
+    /// 全件の読み込みにしか無い録画（読み込みの間に増えた）は後ろに足す
+    public static func completing(shown: [RecordedTitle], withMetadataFrom full: [RecordedTitle]) -> [RecordedTitle] {
+        let byID = Dictionary(full.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let shownIDs = Set(shown.map(\.id))
+        let updated = shown.map { title in
+            guard let fresh = byID[title.id], fresh.start == title.start else { return title }
+            return title.keepingMetadata(of: fresh)
+        }
+        return updated + full.filter { !shownIDs.contains($0.id) }
     }
 }
 
@@ -254,6 +402,8 @@ public enum RecordingDeletion {
         case savedList
         /// ほかの録画を削除している途中（1 件ずつ）
         case deleting
+        /// 録画の保護を切り替えている途中
+        case protecting
         /// 一覧を取り直している途中（取り直しの後に消すと、消えたかを読み直して確かめられないため）
         case refreshing
 
@@ -263,17 +413,19 @@ public enum RecordingDeletion {
             case .recording: "録画中の録画は削除できません"
             case .savedList: "更新が終わってから削除できます"
             case .deleting: "ほかの録画を削除しています"
+            case .protecting: "録画の保護を切り替えています"
             case .refreshing: "一覧を更新しています"
             }
         }
     }
 
     public static func blocker(_ title: RecordedTitle, isShowingSavedList: Bool, isDeleting: Bool = false,
-                               isRefreshing: Bool = false) -> Blocker? {
+                               isProtecting: Bool = false, isRefreshing: Bool = false) -> Blocker? {
         if title.isProtected { return .protected }
         if title.isRecording { return .recording }
         if isShowingSavedList { return .savedList }
         if isDeleting { return .deleting }
+        if isProtecting { return .protecting }
         if isRefreshing { return .refreshing }
         return nil
     }
@@ -282,6 +434,52 @@ public enum RecordingDeletion {
     public static let stillListed = ErrorPresentation(
         title: "録画が一覧に残っています",
         message: "nasne は削除を受け付けましたが、一覧から消えていません。一覧を更新して確かめてください。")
+}
+
+/// 録画の保護の切り替えの決まり（画面と試験で同じものを使う）
+public enum RecordingProtection {
+    /// 切り替えられない理由。録画中は nasne に送らない（送ったときの振る舞いは測っていない。削除と同じ）。
+    /// 保存した一覧を出している間は、取り直してから（今の状態が分からないため）
+    public enum Blocker: Sendable, Equatable {
+        case recording
+        case savedList
+        /// 録画を削除している途中
+        case deleting
+        /// ほかの録画の保護を切り替えている途中（1 件ずつ）
+        case protecting
+        /// 一覧を取り直している途中
+        case refreshing
+
+        public var text: String {
+            switch self {
+            case .recording: "録画中の録画は保護を切り替えられません"
+            case .savedList: "更新が終わってから切り替えられます"
+            case .deleting: "録画を削除しています"
+            case .protecting: "ほかの録画の保護を切り替えています"
+            case .refreshing: "一覧を更新しています"
+            }
+        }
+    }
+
+    public static func blocker(_ title: RecordedTitle, isShowingSavedList: Bool, isDeleting: Bool = false,
+                               isProtecting: Bool = false, isRefreshing: Bool = false) -> Blocker? {
+        if title.isRecording { return .recording }
+        if isShowingSavedList { return .savedList }
+        if isDeleting { return .deleting }
+        if isProtecting { return .protecting }
+        if isRefreshing { return .refreshing }
+        return nil
+    }
+
+    /// nasne が受け付けたのに、読み直した一覧で保護の印が変わっていないとき
+    public static let unchanged = ErrorPresentation(
+        title: "保護が切り替わっていません",
+        message: "nasne は受け付けましたが、一覧の保護の印が変わっていません。一覧を更新して確かめてください。")
+
+    /// 読み直した一覧にその録画が無いとき（ほかの機器で消されたなど）
+    public static let notListed = ErrorPresentation(
+        title: "録画が一覧にありません",
+        message: "ほかの機器で削除されたかもしれません。一覧を更新して確かめてください。")
 }
 
 /// ジャンルの並び（ARIB STD-B10 の大分類の順。DIDL の `upnp:genre` はこの名前で届く。2026-11-20 実機）

@@ -21,11 +21,14 @@ import ImageIO
 //   mirne-mobile-probe extras    --host <nasne> [--pick shortest|longest|<番号>]   （pydtcpip の口を GET で試す。値は出さない）
 //   mirne-mobile-probe scpd      --host <nasne> [--action <名前の一部>]   （SOAP のサービスの説明を GET で読む）
 //   mirne-mobile-probe delete-title --host <nasne> --at "yyyy-MM-dd HH:mm" [--send]   （★書き込み。試しの録画を 1 件消す。合意を取ってから）
+//   mirne-mobile-probe protect-title --host <nasne> --at "yyyy-MM-dd HH:mm" [--send --protect|--unprotect]   （★書き込み。試しの録画の保護を 1 回切り替える。合意を取ってから）
+//   mirne-mobile-probe resume-position --host <nasne> --at "yyyy-MM-dd HH:mm" [--send --seconds <秒>]   （★書き込み。試しの録画の再開位置を 1 回書く。合意を取ってから）
+//   mirne-mobile-probe p6        --host <nasne> [--chapter-limit 60] [--metadata-samples 5]   （1.1.0 の機能の下調べ。読み取りだけ）
 //   mirne-mobile-probe view      [--file <TS> [--snapshot <PNG> --snapshot-at <秒>]] [--quality …] [--pick …] [--seek <秒>]
 //                                [--seconds 30] [--deinterlace adaptive|bob|weave] [--mute]   （窓を開いて描く）
 //
 // --host の代わりに環境変数 MIRNE_NASNE_HOST でもよい。
-// nasne には読み取りしか送らない（PINVerify と EPGGet は POST だが、どちらも状態を変えない）。例外は delete-title の --send だけ。
+// nasne には読み取りしか送らない（PINVerify と EPGGet は POST だが、どちらも状態を変えない）。例外は delete-title・protect-title・resume-position の --send だけ。
 // 出力に機器の固有値（MAC アドレス・IP アドレス・HDD のシリアル・B-CAS のカード ID・UDN）、地域、
 // 局名、番組名、PIN、トークンを出さない。件数と形だけを出す。
 
@@ -44,6 +47,9 @@ let subcommands: [(name: String, summary: String)] = [
     ("view", "録画（nasne か手元の TS）を窓に描いて確かめる（デインターレース・A/V のずれ）"),
     ("scpd", "SOAP のサービスの説明（SCPD）を読み、アクションと引数の名前・型を出す（GET だけ）"),
     ("delete-title", "★書き込み：試しの録画を 1 件消し、応答と件数の変化を見る（--send が無ければ送らない。合意を取ってから）"),
+    ("protect-title", "★書き込み：試しの録画の保護を 1 回切り替え、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
+    ("resume-position", "★書き込み：試しの録画の再開位置を 1 回書き、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
+    ("p6", "1.1.0 の機能の下調べ：局のロゴ（地上・BS・CS）・Browse の順・BrowseMetadata・保存した res と今の res・チャプターを読み取りだけで測る"),
     ("extras", "pydtcpip が使う読み取りの口（\(ExtrasEndpoints.remoteAPIPort) の titleListGet・チャプター、"
         + "\(ExtrasEndpoints.webAPIPort) のサムネイル）が通るかを見る（GET だけ）"),
 ]
@@ -475,6 +481,9 @@ do {
     case "extras": try await ExtrasCommand.run()
     case "scpd": try await ScpdCommand.run()
     case "delete-title": try await DeleteTitleCommand.run()
+    case "protect-title": try await ProtectTitleCommand.run()
+    case "resume-position": try await ResumePositionCommand.run()
+    case "p6": try await Phase6Command.run()
     default: printUsage(); exit(64)
     }
 } catch {
