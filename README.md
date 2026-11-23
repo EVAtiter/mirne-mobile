@@ -32,8 +32,9 @@ DTCP-IP or other technologies, and it gives no warranty of non-infringement.
   - Full screen, always on top, and back to the standard size
 - **Live viewing (ライブ)**: watch what is on the air. Change stations from the menu in the controls, ↑↓, or the number keys. While the nasne is recording, live viewing starts on the station being recorded
 - **Info (情報)**: shows the nasne itself, free HDD space, programs being recorded, notices, and schedules that failed to record
-- **Switching screens**: switch between Program guide, Schedules, Recordings, and Info with the tabs floating at the bottom of the window (screen). Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float just above the tabs
-- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
+- **Media (メディア)**: watch and listen to videos (MP4), music (MP3, AAC), and photos (JPEG, PNG) placed in the nasne's shared folder. First choose Video, Music, or Photo (ビデオ・ミュージック・フォト), then browse the folders. Videos and music play in the same playback window as recordings (they never play at the same time as a recording or live broadcast; on the Mac, opening one switches the window over), and photos open large and can be stepped through. No credentials are needed. Put files in the shared folder with Finder or the like
+- **Switching screens**: switch between Program guide, Schedules, Recordings, Media, and Info with the tabs floating at the bottom of the window (screen). Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float just above the tabs
+- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. nasne HOME, the nasne's own settings screen, opens in your browser from the nasne section of Settings (ブラウザで開く). The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
 - **iPhone and iPad**: the same program guide, schedules, recordings, info, playback, and live viewing. Tap a recording or schedule to select it and show its card, and double-tap a recording to play it. Playback covers the whole screen; tap to show the controls, and double-tap the left or right half to go 10 seconds back or forward (recordings). Playback stops when the app goes to the background and resumes from the same position when you come back
   - On a narrow screen such as an iPhone in portrait, the card of the selected recording or schedule opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
 
@@ -74,7 +75,7 @@ The same Release also has the source code of FFmpeg that the iPhone and iPad ver
    Credentials (資格情報（DTCP-IP）), choose the two files of a certificate and private key obtained from
    your own device (a `credentials.env` file also works). The program guide, schedules, and recording
    list work without credentials
-3. **Watch**: switch between Program guide, Schedules, Recordings, and Info with the tabs at the bottom of the window.
+3. **Watch**: switch between Program guide, Schedules, Recordings, Media, and Info with the tabs at the bottom of the window.
    Select a recording and press a play button in its card, or double-click its row or press Return. Start live viewing
    with Live (ライブ) at the right end of the bar at the top of the screen or the button next to a station name in the program guide
 
@@ -97,7 +98,7 @@ Main keys in the viewer window:
 | T | Always on top |
 | ⌘0 | Back to the standard size |
 
-In the main window, ⌘1–⌘4 switch screens, ⌘R refreshes, and ⌘N creates a new schedule.
+In the main window, ⌘1–⌘5 switch screens, ⌘R refreshes, and ⌘N creates a new schedule.
 
 On the iPhone and iPad:
 
@@ -110,7 +111,7 @@ On the iPhone and iPad:
 - In the playback screen, tap to show or hide the controls and close it with × at the top left. The
   volume follows the device's volume buttons. With a hardware keyboard, the keys above work, except F,
   Esc, T, and ⌘0
-- With a hardware keyboard, ⌘1–⌘4, ⌘R, ⌘N, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
+- With a hardware keyboard, ⌘1–⌘5, ⌘R, ⌘N, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
   work in the main screen
 
 ## About DTCP-IP credentials

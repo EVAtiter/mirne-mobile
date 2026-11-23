@@ -84,6 +84,11 @@ struct SettingsView: View {
                 if let date = services.registration.registeredAt {
                     LabeledContent("登録した日時", value: date.formatted(date: .abbreviated, time: .shortened))
                 }
+                LabeledContent("nasne HOME") {
+                    Link("ブラウザで開く", destination: services.nasneHomeURL)
+                }
+                SettingsNote("nasne の設定画面を Web ブラウザで開きます。",
+                             details: ["nasne と同じネットワークにいるときに開けます。"])
                 Button("登録を外す…", role: .destructive) { confirming = true }
             }
             Section("番組表") {

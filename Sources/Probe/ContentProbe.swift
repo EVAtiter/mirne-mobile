@@ -179,3 +179,35 @@ enum LiveCommand {
         say("（ライブの res には HEAD も GET も送っていない）")
     }
 }
+
+/// 共有フォルダーのメディアの一覧を、種類ごとの木を深さ優先でたどって数える（Browse だけ。題は出さない）
+enum MediaCommand {
+    /// たどる深さの上限（共有フォルダーの下の段数）
+    static let maxDepth = 6
+
+    static func run() async throws {
+        let host = requiredHost()
+        let (device, _) = try await connect(host)
+        let media = DLNAMediaLibraryService(catalog: RecordingCatalogService(soap: SOAPTransport(client: client), device: device))
+        for kind in MediaKind.allCases {
+            let start = Date()
+            var folders = 0
+            var files: [MediaFile] = []
+            func walk(_ listing: MediaListing, depth: Int) async throws {
+                folders += listing.folders.count
+                files += listing.files
+                guard depth < maxDepth else { return }
+                for folder in listing.folders {
+                    try await walk(try await media.listing(folderID: folder.id, kind: kind), depth: depth + 1)
+                }
+            }
+            try await walk(try await media.root(kind: kind), depth: 0)
+            var types: [String: Int] = [:]
+            for file in files { types[file.original?.mimeType ?? "元の res なし", default: 0] += 1 }
+            say("\(kind.rawValue): フォルダー \(folders)・ファイル \(files.count)（\(elapsed(start))）")
+            say("  形式: \(types.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: "・"))")
+            say("  縮小版あり \(files.filter { $0.thumbnail != nil }.count)・大きさあり \(files.filter { $0.original?.size != nil }.count)"
+                + "・長さあり \(files.filter { $0.original?.durationSeconds != nil }.count)・解像度あり \(files.filter { $0.original?.resolution != nil }.count)")
+        }
+    }
+}

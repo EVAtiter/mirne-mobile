@@ -23,6 +23,7 @@ struct MainView: View {
     @State private var recordings: RecordingsModel
     @State private var lineup: GuideLineupModel
     @State private var schedules: SchedulesModel
+    @State private var media: MediaModel
     @State private var credentials = CredentialsModel.live()
     /// 局のロゴの絵（録画・予約の一覧の行の頭に出す。ロゴが変わったときだけ作り直す）
     @State private var logoImages = ChannelLogoImages()
@@ -36,6 +37,7 @@ struct MainView: View {
         _info = State(initialValue: InfoModel(services: services))
         _recordings = State(initialValue: RecordingsModel(services: services, channels: channels, library: library, viewing: viewing))
         _schedules = State(initialValue: SchedulesModel(schedules: services.schedules, channels: channels))
+        _media = State(initialValue: MediaModel(services: services))
         _lineup = State(initialValue: GuideLineupModel(
             channels: channels, logos: logos,
             showsSubchannels: UserDefaults.standard.bool(forKey: GuideSettingsKey.showsSubchannels)))
@@ -128,6 +130,7 @@ struct MainView: View {
     private func content(_ section: MainSection, layout: MainLayout) -> some View {
         switch section {
         case .info: InfoView(model: info)
+        case .media: MediaView(model: media, openViewer: openViewer)
         case .recordings: RecordingsView(model: recordings, openViewer: openViewer)
         case .schedules: SchedulesView(model: schedules, scheduleService: services.schedules)
         case .guide:
@@ -189,6 +192,7 @@ struct MainView: View {
         }
         let infoErrors = [info.device.error, info.hdds.error, info.status.error, info.recNg.error].compactMap { $0 }
         if let notice = MainNotices.info(isLoading: info.isLoading, errors: infoErrors) { notices.append(notice) }
+        if let notice = MainNotices.media(isLoading: media.isLoading, loadError: media.loadError) { notices.append(notice) }
         return notices
     }
 
@@ -201,6 +205,7 @@ struct MainView: View {
         case .reloadInfo: Task { await info.reload() }
         case .refreshGuide: Task { await environment.programGuide?.refresh() }
         case .reloadLineup: Task { await lineup.load() }
+        case .reloadMedia: Task { await media.reload() }
         }
     }
 }
@@ -211,7 +216,7 @@ struct MainViewIdentity: Hashable {
     let host: String
 }
 
-/// ライブの記号（ツールバーの「ライブ」と番組表の視聴のボタン。 で `play.tv` と決めた）
+/// ライブの記号（ツールバーの「ライブ」と番組表の視聴のボタン。`play.tv` に決めた）
 enum LiveSymbol {
     static let watch = "play.tv"
 }
@@ -248,7 +253,7 @@ struct MainLayout: Equatable {
 
 /// 下の切り替えの項目（並びはこの順）。「設定」は 2026-11-20 に切り替えから外した（前に保存した "settings" は知らない値として「情報」になる）
 enum MainSection: String, CaseIterable, Identifiable {
-    case guide, schedules, recordings, info
+    case guide, schedules, recordings, media, info
 
     var id: String { rawValue }
 
@@ -257,6 +262,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .guide: "番組表"
         case .schedules: "予約"
         case .recordings: "録画"
+        case .media: "メディア"
         case .info: "情報"
         }
     }
@@ -266,6 +272,8 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .guide: "list.bullet.rectangle"
         case .schedules: "calendar.badge.clock"
         case .recordings: "film.stack"
+        // 共有フォルダーの動画・音楽・写真
+        case .media: "photo.on.rectangle.angled"
         // nasne の本体・HDD・状態の情報（ホームの家の形から、情報の i に替えた）
         case .info: "info.circle"
         }

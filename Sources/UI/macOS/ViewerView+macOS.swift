@@ -17,15 +17,17 @@ struct ViewerView: View {
 
     var body: some View {
         let playback = environment.playback
-        ViewerStage(overlay: overlay)
-            // 全画面のボタンは右上の角（左上の窓のボタンと同じく、操作部と一緒に出し入れする。2026-11-23）
+        let media = environment.mediaPlayback
+        ViewerContent(overlay: overlay)
+            // 全画面のボタンは右上の角（左上の窓のボタンと同じく、操作部と一緒に出し入れする。2026-11-23）。
+            // メディアは OS の標準の再生画面が全画面のボタンを持つので出さない
             .overlay(alignment: .topTrailing) {
-                if overlay.controlsShown(playback.state) {
+                if media == nil && overlay.controlsShown(playback.state) {
                     fullScreenButton.transition(.opacity)
                 }
             }
             .background(WindowAccessor(beforeShown: { environment.viewerWindow.conceal($0) }) { configure($0) })
-            .onChange(of: overlay.controlsShown(playback.state)) { _, shown in setWindowButtons(visible: shown) }
+            .onChange(of: windowButtonsVisible) { _, shown in setWindowButtons(visible: shown) }
             // 操作部を隠したら、全画面では、マウスを動かすまでカーソルも隠す
             .onChange(of: overlay.isVisible) { _, visible in
                 if !visible, window?.styleMask.contains(.fullScreen) == true { NSCursor.setHiddenUntilMouseMoves(true) }
@@ -36,7 +38,7 @@ struct ViewerView: View {
                 case .ended: overlay.hide(after: .zero)
                 }
             }
-            .onTapGesture(count: 2) { toggleFullScreen() }
+            .onTapGesture(count: 2) { if media == nil { toggleFullScreen() } }
             .focusable()
             .focusEffectDisabled()
             .focused($focused)
@@ -49,6 +51,8 @@ struct ViewerView: View {
                 return .handled
             }
             .onKeyPress(keys: ViewerKeys.all) { press in
+                // メディアのキーは OS の標準の再生画面に任せる
+                guard media == nil else { return .ignored }
                 let result = ViewerBehavior.handle(press, environment: environment, window: windowActions)
                 if result == .handled { overlay.show() }
                 return result
@@ -63,6 +67,11 @@ struct ViewerView: View {
                 environment.endViewing()
             }
             .task { await ViewerBehavior.watchDisplaySleep(environment) { window?.isMiniaturized == true } }
+    }
+
+    /// 窓の左上のボタン（閉じるなど）を出すか：録画・ライブは操作部と一緒に出し入れし、メディアはいつも出す
+    private var windowButtonsVisible: Bool {
+        environment.mediaPlayback != nil || overlay.controlsShown(environment.playback.state)
     }
 
     /// 窓の操作（キー操作から）
@@ -99,7 +108,7 @@ struct ViewerView: View {
         window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = .black
-        setWindowButtons(visible: overlay.controlsShown(environment.playback.state))
+        setWindowButtons(visible: windowButtonsVisible)
         windowButtonCenterY = Self.windowButtonCenterY(window)
     }
 
@@ -189,7 +198,7 @@ struct VideoSurface: NSViewRepresentable {
 }
 
 /// SwiftUI の画面から、それを載せている NSWindow を受け取る（mirne の WindowAccessor と同じ）。
-/// `beforeShown` は窓に載ったその場で呼ぶ（窓が画面に出る前。SwiftUI の状態は書き換えないこと。 で窓を透明にするのに使う）
+/// `beforeShown` は窓に載ったその場で呼ぶ（窓が画面に出る前。SwiftUI の状態は書き換えないこと。窓を透明にするのに使う）
 struct WindowAccessor: NSViewRepresentable {
     var beforeShown: ((NSWindow) -> Void)? = nil
     let onWindow: (NSWindow) -> Void

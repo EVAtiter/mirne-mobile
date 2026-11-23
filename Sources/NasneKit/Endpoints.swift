@@ -96,6 +96,8 @@ public enum BroadcastingType {
 public enum WebAPIResponseKind: Sendable {
     case json
     case binary
+    /// ブラウザで開く画面（アプリは読まない。nasne HOME）
+    case page
 }
 
 /// WebAPI のエンドポイントの待ち受けるポートの種類（番号は `NasnePorts`）
@@ -186,6 +188,12 @@ public struct WebAPIEndpointTable: Sendable {
     /// 本文なしで送る。トークンが正しいこと自体が検証になる（PIN そのものは送らない）
     public let pinVerify: WebAPIEndpoint
 
+    // ── 画面（ブラウザで開く） ──
+    /// nasne の設定画面（nasne HOME）の入口。端末の種類を見て PC 向けかスマートフォン向けの画面へ移る。
+    /// 在りかは SIE 製（torne mobile HB の実測。80 番から 301 で誘導）と Buffalo 製（2026-11-23 の実測）で同じ。
+    /// Buffalo 製は `/nasne_home/` だけだと 404 を返すので、ファイル名まで書く
+    public let nasneHome: WebAPIEndpoint
+
     /// 最初に確かめた表
     static let base: WebAPIEndpointTable = {
         let parameters = WebAPIParameterNames(broadcastingType: "broadcastingType", hddID: "id", titleID: "id", resumePosition: "position")
@@ -216,7 +224,8 @@ public struct WebAPIEndpointTable: Sendable {
             recordedContentResumePositionSet: WebAPIEndpoint("/recorded/recordedContentResumePositionSet", method: "POST",
                                                              requiredParameters: [parameters.titleID, parameters.resumePosition],
                                                              port: .recordingWrite),
-            pinVerify: WebAPIEndpoint("/config/PINVerify", method: "POST", requiresToken: true))
+            pinVerify: WebAPIEndpoint("/config/PINVerify", method: "POST", requiresToken: true),
+            nasneHome: WebAPIEndpoint("/nasne_home/index.html", responseKind: .page))
     }()
 }
 
@@ -333,13 +342,19 @@ public struct DLNATable: Sendable {
     public let liveTunerContainer: String
     /// 放送の種別 → 帯域の container id の末尾（例：地上は `DTTB`）
     public let liveBandSuffixes: [Int: String]
+    /// 共有フォルダーのメディアの、種類ごとのフォルダーの木の根（直下が共有フォルダー。2026-11-23 に Buffalo 製で確かめた）
+    public let mediaFolderContainers: [MediaKind: String]
+    /// 写真の縮小版の res の URL の `cnv` の値（一覧のサムネイルに使う小さいもの。約 3.5 KB）
+    public let mediaThumbnailConversion: String
 
     /// 最初に確かめた表（地上の帯域は SIE 製・Buffalo 製とも `DTTB`）
     static let base = DLNATable(
         allRecordingsContainer: "0/video/all",
         recordingItemSeparator: "/pvr?id=",
         liveTunerContainer: "0/video/LiveTuner",
-        liveBandSuffixes: [BroadcastingType.terrestrial: "DTTB"])
+        liveBandSuffixes: [BroadcastingType.terrestrial: "DTTB"],
+        mediaFolderContainers: [.video: "0/video/folder", .music: "0/music/folder", .photo: "0/photo/folder"],
+        mediaThumbnailConversion: "JPEG_TN")
 }
 
 // MARK: - xsrs の頼みの文書

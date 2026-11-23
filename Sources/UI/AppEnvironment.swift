@@ -256,7 +256,7 @@ final class AppEnvironment {
         switch nowPlaying {
         case .recording: currentTitle.map(PlaybackQuality.choices(of:)) ?? []
         case .live(let key): live?.station(key)?.qualityChoices ?? []
-        case nil: []
+        case .media, nil: []
         }
     }
 
@@ -374,6 +374,28 @@ final class AppEnvironment {
         currentTitle = nil
     }
 
+    // MARK: - メディア
+
+    /// 再生の窓に出しているメディア（録画・ライブのときは nil）
+    var mediaPlayback: MediaPlayback? {
+        if case .media(let media) = nowPlaying { return media }
+        return nil
+    }
+
+    /// 録画・ライブを再生しているか（メディアでない。操作部・メニューの対象）
+    var isPlayingBroadcast: Bool { nowPlaying != nil && mediaPlayback == nil }
+
+    /// メディアの動画・音楽を再生の窓で再生する（録画・ライブと同じ窓を使い、窓が 1 つなので同時には鳴らない）。
+    /// 録画なら止めどころを記録してから止める。逆に録画・ライブを始めると、`nowPlaying` が替わってメディアは止まる
+    func playMedia(_ media: MediaPlayback) {
+        if playback.kind == .recording { playback.recordCheckpoint(.left) }
+        viewing?.end()
+        playback.stop()
+        liveStartError = nil
+        currentTitle = nil
+        nowPlaying = .media(media)
+    }
+
     /// 視聴ウィンドウを閉じた
     func endViewing() {
         playback.stop()
@@ -421,4 +443,6 @@ final class AppEnvironment {
 enum NowPlaying: Equatable {
     case recording(titleID: String)
     case live(LiveStationKey)
+    /// メディア（共有フォルダーの動画・音楽。OS の標準の再生画面）
+    case media(MediaPlayback)
 }

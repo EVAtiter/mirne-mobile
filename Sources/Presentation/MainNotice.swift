@@ -27,13 +27,15 @@ public enum MainNoticeAction: Sendable, Equatable {
     case refreshGuide
     /// 局の一覧を読み込み直す
     case reloadLineup
+    /// メディアのいま見ている場所を読み込み直す
+    case reloadMedia
 
     /// ボタンの名前
     public var title: String {
         switch self {
         case .retryConnection: "探し直す"
         case .refreshGuide: "更新"
-        case .reloadRecordings, .reloadSchedules, .reloadInfo, .reloadLineup: "もう一度読み込む"
+        case .reloadRecordings, .reloadSchedules, .reloadInfo, .reloadLineup, .reloadMedia: "もう一度読み込む"
         }
     }
 }
@@ -134,6 +136,12 @@ public enum MainNotices {
         case .idle, .updated, nil:
             return nil
         }
+    }
+
+    /// メディア（共有フォルダー）：いま見ている場所の読み込み中・読み込めなかった
+    public static func media(isLoading: Bool, loadError: ErrorPresentation?) -> MainNotice? {
+        if isLoading { return MainNotice(id: "media", kind: .progress, title: "メディアを読み込んでいます…") }
+        return loadError.map { .error(id: "media", $0, prefix: "メディア", action: .reloadMedia) }
     }
 
     /// 局の一覧（番組表の局の並び）：読み込み中・読み込めなかった

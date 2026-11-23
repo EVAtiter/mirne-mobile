@@ -150,7 +150,8 @@ private struct ControlMenuItems: View {
     var body: some View {
         let playback = environment.playback
         let viewer = viewerIsKey == true
-        let playing = environment.nowPlaying != nil
+        // メディアは OS の標準の再生画面が操作を受け持つので、録画・ライブのときだけ
+        let playing = environment.isPlayingBroadcast
         let live = playback.kind == .live
         let recording = playing && !live
 

@@ -41,6 +41,11 @@ public struct WebAPITransport: Sendable {
         WebAPITransport(host: host, client: client, tokens: tokens, profile: profile, diagnostics: diagnostics)
     }
 
+    /// ブラウザで開く画面の URL（`responseKind` が `.page` のエンドポイント。頼みの URL と同じ組み立て）
+    public func pageURL(_ endpoint: WebAPIEndpoint) -> URL {
+        url(endpoint, parameters: [:])
+    }
+
     func url(_ endpoint: WebAPIEndpoint, parameters: [String: String]) -> URL {
         var components = URLComponents()
         components.scheme = "http"

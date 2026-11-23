@@ -122,6 +122,15 @@ struct DiscoveryTests {
         #expect(device.controlURL(for: NasneProfiles.standard.soap.contentDirectory).path == "/MediaServer_ContentDirectory/control")
     }
 
+    @Test("設定画面（nasne HOME）は登録したアドレスの WebAPI のポートの /nasne_home/index.html（頼みの URL と同じ組み立て）")
+    func nasneHomeURL() throws {
+        let registration = RegisteredNasne(host: NasneFixture.host, udn: "uuid:test", friendlyName: "nasne",
+                                           macAddress: "00:00:5e:00:53:01")
+        let services = try NasneServices.live(registration: registration, device: NasneDevice.direct(host: NasneFixture.host),
+                                              client: MockHTTP())
+        #expect(services.nasneHomeURL.absoluteString == "http://\(NasneFixture.host):64210/nasne_home/index.html")
+    }
+
     @Test("Buffalo 製の個体（modelName が buffalo-nasne）も nasne と見なす。ほかの名前は見なさない")
     func buffaloModelName() throws {
         let location = URL(string: "http://\(NasneFixture.host):58888/")!
@@ -354,6 +363,41 @@ struct RecordingCatalogTests {
             """
         http.reply("/MediaServer_ContentDirectory/control", method: "POST", body: Data(envelope.utf8))
         return RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
+    }
+
+    @Test("説明文に XML で使えない制御文字（生の値・文字参照）が混じっても、Browse の頁を読む")
+    func controlCharactersInDescription() async throws {
+        // 1 件目の説明に生の U+0001、2 件目に文字参照 &#x1B; を入れる（SOAP の封筒の中では、生の値は外の文書に、
+        // 文字参照は中の DIDL に現れる）
+        var didl = NasneFixture.text("dlna/browse_0_video_all.xml")
+        let first = try #require(didl.range(of: "</dc:description>"))
+        didl.replaceSubrange(first, with: "\u{01}</dc:description>")
+        let second = try #require(didl.range(of: "</dc:description>", range: first.upperBound..<didl.endIndex))
+        didl.replaceSubrange(second, with: "&#x1B;</dc:description>")
+        let http = MockHTTP()
+        http.reply("/XSRS", method: "POST", body: NasneFixture.data("soap/title_list.xml"))
+        let envelope = """
+            <?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>\
+            <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">\
+            <Result>\(XMLTree.escapeText(didl))</Result>\
+            <NumberReturned>2</NumberReturned></u:BrowseResponse></s:Body></s:Envelope>
+            """
+        http.reply("/MediaServer_ContentDirectory/control", method: "POST", body: Data(envelope.utf8))
+        let titles = try await RecordingCatalogService(soap: SOAPTransport(client: http),
+                                                       device: NasneDevice.direct(host: NasneFixture.host)).titles()
+        #expect(titles.count == 2)
+        #expect(titles.allSatisfy { $0.resources.count == 3 })
+    }
+
+    @Test("XML で使えない制御文字だけを除き、TAB・LF・CR とほかの文字参照は残す")
+    func removesOnlyInvalidControlCharacters() throws {
+        // 生の CR は XML の行末の決まりで LF に直るので、CR は文字参照でだけ確かめる
+        let source = "<a>x\u{01}\u{1F}&#x1B;&#X0b;&#27;&#0008;y\t\n&#x9;&#10;&#13;&#x41;&#32;&amp;#x1;z</a>"
+        let root = try XMLTree.parse(source, source: "test")
+        #expect(root.text == "xy\t\n\t\n\rA &#x1;z")
+        // 制御文字が無ければ中身をそのまま返す
+        let plain = Data("<a>ok</a>".utf8)
+        #expect(XMLTree.removingInvalidControlCharacters(plain) == plain)
     }
 
     @Test("xsrs の録画 2 件に DIDL をタイトル ID で結合する")
@@ -606,6 +650,81 @@ struct RecordingCatalogTests {
         let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
         #expect(body.contains("<Elements>&lt;item id=\"\"&gt;&amp;&lt;/item&gt;</Elements>"))
         #expect(request.value(forHTTPHeaderField: "SOAPAction") == "\"\(NasneProfiles.standard.soap.scheduledRecording.serviceType)#X_GetRecordScheduleList\"")
+    }
+}
+
+@Suite("メディア（共有フォルダー）")
+struct MediaLibraryTests {
+    /// 合成の DIDL（2026-11-23 に Buffalo 製で測った形。題は作り物）
+    static let rootDIDL = """
+        <DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" \
+        xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">\
+        <container id="0/photo/folder/fol1" parentID="0/photo/folder" restricted="1"><dc:title>share1</dc:title>\
+        <upnp:class>object.container</upnp:class></container></DIDL-Lite>
+        """
+    static let folderDIDL = """
+        <DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" \
+        xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">\
+        <container id="0/photo/folder/fol1/fol5" parentID="0/photo/folder/fol1" restricted="1"><dc:title>写真</dc:title>\
+        <upnp:class>object.container</upnp:class></container>\
+        <item id="0/photo/folder/fol1/con6" parentID="0/photo/folder/fol1" restricted="1"><dc:title>試しの写真</dc:title>\
+        <upnp:class>object.item.imageItem.photo</upnp:class>\
+        <res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_MED;DLNA.ORG_FLAGS=00D00000000000000000000000000000" \
+        resolution="800x450" colorDepth="24" size="192951">http://192.0.2.1:58890/web/photo/con6</res>\
+        <res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_SM;DLNA.ORG_CI=1" colorDepth="24">\
+        http://192.0.2.1:58890/web/photo/con6?cnv=JPEG_SM</res>\
+        <res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN;DLNA.ORG_CI=1" colorDepth="24">\
+        http://192.0.2.1:58890/web/photo/con6?cnv=JPEG_TN</res></item>\
+        <item id="0/photo/folder/fol1/con8" parentID="0/photo/folder/fol1" restricted="1"><dc:title>試しの図</dc:title>\
+        <upnp:class>object.item.imageItem.photo</upnp:class>\
+        <res protocolInfo="http-get:*:image/png:DLNA.ORG_PN=PNG_LRG" resolution="572x320" size="227677">\
+        http://192.0.2.1:58890/web/photo/con8</res></item></DIDL-Lite>
+        """
+
+    /// Browse の ObjectID ごとに DIDL を返す偽の nasne
+    func service(_ documents: [String: String]) -> (DLNAMediaLibraryService, MockHTTP) {
+        let http = MockHTTP()
+        http.respond("/MediaServer_ContentDirectory/control", method: "POST") { request in
+            let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            let didl = documents.first { body.contains("<ObjectID>\($0.key)</ObjectID>") }?.value ?? ""
+            let envelope = """
+                <?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>\
+                <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">\
+                <Result>\(XMLTree.escapeText(didl))</Result>\
+                <NumberReturned>1</NumberReturned><TotalMatches>1</TotalMatches></u:BrowseResponse></s:Body></s:Envelope>
+                """
+            return MockHTTP.Reply(status: 200, body: Data(envelope.utf8))
+        }
+        let catalog = RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
+        return (DLNAMediaLibraryService(catalog: catalog), http)
+    }
+
+    @Test("種類の木の根は表の容器（フォト は 0/photo/folder）を読み、直下の共有フォルダーを返す")
+    func root() async throws {
+        let (media, http) = service(["0/photo/folder": Self.rootDIDL])
+        let listing = try await media.root(kind: .photo)
+        #expect(listing.folders == [MediaFolder(id: "0/photo/folder/fol1", title: "share1", kind: .photo)])
+        #expect(listing.files.isEmpty)
+        let body = String(decoding: http.sentRequests.first?.httpBody ?? Data(), as: UTF8.self)
+        #expect(body.contains("<ObjectID>0/photo/folder</ObjectID>"))
+    }
+
+    @Test("フォルダーの中のフォルダーとファイルを nasne の並びのまま返す。写真は元のファイルと縮小版（JPEG_TN）を分ける")
+    func listing() async throws {
+        let (media, _) = service(["0/photo/folder/fol1": Self.folderDIDL])
+        let listing = try await media.listing(folderID: "0/photo/folder/fol1", kind: .photo)
+        #expect(listing.folders.map(\.id) == ["0/photo/folder/fol1/fol5"])
+        #expect(listing.files.map(\.id) == ["0/photo/folder/fol1/con6", "0/photo/folder/fol1/con8"])
+        let jpeg = listing.files[0]
+        #expect(jpeg.kind == .photo)
+        #expect(jpeg.original?.url == "http://192.0.2.1:58890/web/photo/con6")
+        #expect(jpeg.original?.mimeType == "image/jpeg")
+        #expect(jpeg.original?.size == 192_951)
+        #expect(jpeg.original?.resolution == "800x450")
+        #expect(jpeg.thumbnail?.url == "http://192.0.2.1:58890/web/photo/con6?cnv=JPEG_TN")
+        let png = listing.files[1]
+        #expect(png.original?.mimeType == "image/png")
+        #expect(png.thumbnail == nil)
     }
 }
 

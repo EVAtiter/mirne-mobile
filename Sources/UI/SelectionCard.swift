@@ -20,10 +20,9 @@ final class ListRowFrames<ID: Hashable> {
 }
 
 extension View {
-    /// この行の枠を `store` に知らせる（見えなくなったら消す）
+    /// この行の枠を `store` に知らせる（見えなくなったら消し、また見えたら覚えていた枠を知らせ直す）
     func reportsRowFrame<ID: Hashable>(_ id: ID, into store: ListRowFrames<ID>) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { store.frames[id] = $0 }
-            .onDisappear { store.frames[id] = nil }
+        modifier(RowFrameReporter(id: id, store: store))
     }
 
     /// カードの外を押したら `close` を呼ぶ。ただし一覧の行を押したときは閉じない（一覧の選択が変わり、カードがその行へ移る）。
@@ -39,6 +38,26 @@ extension View {
                 }
             }
         }
+    }
+}
+
+/// 行の枠を知らせる。Mac の一覧は、同じ行を出したまま消えた・見えたを知らせることがある（まとめを開いた中の行で、
+/// 枠を知らせた後に消えて、また見えた。2026-11-24）。見え直したときは枠が変わらないので `onGeometryChange` が呼ばれず、
+/// 消えたときに外した枠が戻らないまま、行を選んでもカードを置けなかった。覚えていた枠を、見え直したときに知らせ直す
+private struct RowFrameReporter<ID: Hashable>: ViewModifier {
+    let id: ID
+    let store: ListRowFrames<ID>
+    /// 最後に知らせた枠
+    @State private var frame: CGRect?
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                frame = $0
+                store.frames[id] = $0
+            }
+            .onAppear { if let frame { store.frames[id] = frame } }
+            .onDisappear { store.frames[id] = nil }
     }
 }
 

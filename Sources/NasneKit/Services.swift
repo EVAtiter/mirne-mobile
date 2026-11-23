@@ -100,6 +100,14 @@ public protocol LiveCatalogService: Sendable {
     func channels(broadcastingType: Int) async throws -> [LiveChannel]
 }
 
+/// 共有フォルダーのメディア（動画・音楽・写真）の一覧（DLNA の Browse。読むだけ）
+public protocol MediaLibraryService: Sendable {
+    /// 種類の木の根の中身（共有フォルダー）
+    func root(kind: MediaKind) async throws -> MediaListing
+    /// フォルダー 1 つの中身
+    func listing(folderID: String, kind: MediaKind) async throws -> MediaListing
+}
+
 /// 録画の再開位置の書き戻し（書き込み。自動で再試行しない）
 public protocol ResumePositionService: Sendable {
     /// 再開位置を書く（録画の頭からの秒。0 は再開位置を消す）
@@ -113,6 +121,7 @@ extension WebAPIDeviceInfoService: DeviceInfoService {}
 extension RecordingCatalogService: ScheduleService, TitleCatalogService {}
 extension WebAPIProgramGuideService: ProgramGuideService {}
 extension DLNALiveCatalogService: LiveCatalogService {}
+extension DLNAMediaLibraryService: MediaLibraryService {}
 extension WebAPIResumePositionService: ResumePositionService {}
 
 // MARK: - 組み立て（起動時の 1 か所。試験ではモックに差し替える）
@@ -179,18 +188,24 @@ public struct NasneServices: Sendable {
     public let titles: any TitleCatalogService
     public let programGuide: any ProgramGuideService
     public let liveCatalog: any LiveCatalogService
+    /// 共有フォルダーのメディア
+    public let media: any MediaLibraryService
     /// 再開位置の書き戻し（無ければ書き戻さない。試験）
     public let resumePositions: (any ResumePositionService)?
+    /// nasne の設定画面（nasne HOME）の URL。ブラウザで開く
+    public let nasneHomeURL: URL
 
     public init(registration: RegisteredNasne, deviceInfo: any DeviceInfoService, schedules: any ScheduleService,
                 titles: any TitleCatalogService, programGuide: any ProgramGuideService, liveCatalog: any LiveCatalogService,
-                resumePositions: (any ResumePositionService)? = nil) {
+                media: any MediaLibraryService, nasneHomeURL: URL, resumePositions: (any ResumePositionService)? = nil) {
         self.registration = registration
         self.deviceInfo = deviceInfo
         self.schedules = schedules
         self.titles = titles
         self.programGuide = programGuide
         self.liveCatalog = liveCatalog
+        self.media = media
+        self.nasneHomeURL = nasneHomeURL
         self.resumePositions = resumePositions
     }
 
@@ -208,6 +223,8 @@ public struct NasneServices: Sendable {
             titles: catalog,
             programGuide: WebAPIProgramGuideService(transport: webAPI, tokens: try registration.tokenProvider()),
             liveCatalog: DLNALiveCatalogService(catalog: catalog),
+            media: DLNAMediaLibraryService(catalog: catalog),
+            nasneHomeURL: webAPI.pageURL(webAPI.endpoints.nasneHome),
             resumePositions: WebAPIResumePositionService(transport: webAPI))
     }
 }

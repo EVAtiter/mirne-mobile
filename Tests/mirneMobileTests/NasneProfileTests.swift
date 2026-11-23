@@ -7,7 +7,7 @@ import Testing
 struct NasneProfileTests {
     /// 表の外に書いてはいけない頼み方の文字列（パス・SOAP のアクションと引数・サービスの URN・ポート・木の在りか・xsrs の値）
     static let requestPatterns = [
-        #""/(status|recorded|chEpg|config|web)/"#,
+        #""/(status|recorded|chEpg|config|web|nasne_home)/"#,
         #""X_[A-Za-z]+""#,
         #""urn:schemas-(xsrs|s-bras|upnp-org:service)"#,
         #"\b(64210|64220|64230|58888|58890)\b"#,

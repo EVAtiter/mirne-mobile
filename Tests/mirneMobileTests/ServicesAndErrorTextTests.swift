@@ -110,7 +110,8 @@ struct ServicesCompositionTests {
         let real = try NasneServices.live(registration: registration, device: NasneDevice.direct(host: NasneFixture.host),
                                           client: http)
         let services = NasneServices(registration: registration, deviceInfo: FakeDeviceInfo(), schedules: real.schedules,
-                                     titles: real.titles, programGuide: real.programGuide, liveCatalog: real.liveCatalog)
+                                     titles: real.titles, programGuide: real.programGuide, liveCatalog: real.liveCatalog,
+                                     media: real.media, nasneHomeURL: real.nasneHomeURL)
         let counts = try await services.deviceInfo.titleCounts()
         #expect(counts.count == 7 && counts.max == 3000)
         #expect(http.sentRequests.isEmpty)

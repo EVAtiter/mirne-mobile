@@ -237,11 +237,27 @@ public struct TitleResource: Sendable, Equatable, Codable {
 
     /// URL に `cp` の引数が付いた res（ムーブ専用）。再生に使わない
     public var isMoveOnly = false
+    /// `size` 属性（ファイルの大きさ・バイト。共有フォルダーのファイルに付く）
+    public var size: Int64?
+    /// `resolution` 属性（例：`960x720`。動画と写真に付く）
+    public var resolution: String?
+    /// URL の `cnv`（nasne が作った別の形。写真の縮小版の `JPEG_TN`・`JPEG_SM`）。元のファイルなら nil
+    public var conversion: String?
+
+    /// protocolInfo の 3 つ目の欄（MIME の型。例：`video/mp4`・`audio/mpeg`・`image/jpeg`）
+    public var mimeType: String? {
+        let fields = protocolInfo.split(separator: ":", omittingEmptySubsequences: false)
+        return fields.count > Self.mimeTypeFieldIndex ? String(fields[Self.mimeTypeFieldIndex]) : nil
+    }
 
     /// モバイル（低ビットレート版）の quality の値
     public static let mobileQuality = "mobile"
     /// ムーブ専用の res を示す URL の引数の名前（pydtcpip の `profiles/nasne.py`。値は見ず、あるかだけを見る）
     public static let moveOnlyParameter = "cp"
+    /// nasne が作った別の形を示す URL の引数の名前（写真の縮小版。2026-11-23 に Buffalo 製で確かめた）
+    public static let conversionParameter = "cnv"
+    /// protocolInfo（`http-get:*:<MIME>:<DLNA の追加>`）の MIME の欄の位置
+    static let mimeTypeFieldIndex = 2
 
     init(element: XMLTreeElement) {
         url = element.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,9 +276,12 @@ public struct TitleResource: Sendable, Equatable, Codable {
             }
         }
         cleartextSize = (element.attributes["cleartextSize"]).flatMap { Int64($0) }
+        size = (element.attributes["size"]).flatMap { Int64($0) }
+        resolution = element.attributes["resolution"]
         let queryItems = URLComponents(string: url)?.queryItems ?? []
         quality = queryItems.first { $0.name == "quality" }?.value
         isMoveOnly = queryItems.contains { $0.name == Self.moveOnlyParameter }
+        conversion = queryItems.first { $0.name == Self.conversionParameter }?.value
     }
 }
 

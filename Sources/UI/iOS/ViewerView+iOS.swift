@@ -28,7 +28,8 @@ struct ViewerView: View {
 
     var body: some View {
         let playback = environment.playback
-        ViewerStage(overlay: overlay)
+        let media = environment.mediaPlayback
+        ViewerContent(overlay: overlay)
             .environment(\.viewerControlsStyle, controlsStyle)
             .environment(\.viewerIsNarrow, isNarrow)
             .environment(\.viewerControlsSafeArea, safeArea)
@@ -37,27 +38,31 @@ struct ViewerView: View {
                 Color.clear.onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { safeArea = $0 }
             }
             .overlay(alignment: .topLeading) {
-                if overlay.controlsShown(playback.state) {
+                // メディアは OS の標準の再生画面の操作部が出し入れするので、閉じるはいつも出す
+                if media != nil || overlay.controlsShown(playback.state) {
                     closeButton.transition(.opacity)
                 }
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
             .contentShape(Rectangle())
-            // ダブルタップ（録画だけ）：左半分で戻る・右半分で進む。1 回のタップは、ダブルタップでないと分かってから出し入れする
-            .onTapGesture(count: 2, coordinateSpace: .local) { location in skip(at: location) }
+            // ダブルタップ（録画だけ）：左半分で戻る・右半分で進む。1 回のタップは、ダブルタップでないと分かってから出し入れする。
+            // メディアのタップは OS の標準の再生画面に任せる
+            .onTapGesture(count: 2, coordinateSpace: .local) { location in if media == nil { skip(at: location) } }
             .onTapGesture {
+                guard media == nil else { return }
                 if overlay.isVisible { overlay.hide(after: .zero) } else { overlay.show() }
             }
             .focusable()
             .focusEffectDisabled()
             .focused($focused)
             .onKeyPress(keys: ViewerKeys.all) { press in
+                guard media == nil else { return .ignored }
                 let result = ViewerBehavior.handle(press, environment: environment, window: nil)
                 if result == .handled { overlay.show() }
                 return result
             }
             .statusBarHidden()
-            .persistentSystemOverlays(overlay.controlsShown(playback.state) ? .automatic : .hidden)
+            .persistentSystemOverlays(media != nil || overlay.controlsShown(playback.state) ? .automatic : .hidden)
             // 主画面の文字の大きさは配らない（macOS の視聴ウィンドウと同じ）
             .font(.body)
             .controlSize(.regular)

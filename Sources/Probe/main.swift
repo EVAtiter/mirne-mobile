@@ -43,6 +43,7 @@ let subcommands: [(name: String, summary: String)] = [
     ("stream", "録画を HEAD → AKE → GET → PCP の復号で受け、TS の中身を数える（ディスクに書かない）"),
     ("head", "録画の配信 URL に HEAD だけを送り、シークの申告と見出しの形を見る（シークの下調べ。資格情報は要らない）"),
     ("live", "ライブの局の一覧を Browse で読む（チューナーは動かさない）"),
+    ("media", "共有フォルダーの動画・音楽・写真の一覧を Browse で読む（種類ごとの木をたどって数える。題は出さない）"),
     ("play", "手元の TS を録画の再生の系に流し、画面に出さずに数える（音は消す）"),
     ("view", "録画（nasne か手元の TS）を窓に描いて確かめる（デインターレース・A/V のずれ）"),
     ("scpd", "SOAP のサービスの説明（SCPD）を読み、アクションと引数の名前・型を出す（GET だけ）"),
@@ -476,6 +477,7 @@ do {
     case "stream": try await StreamCommand.run()
     case "head": try await HeadCommand.run()
     case "live": try await LiveCommand.run()
+    case "media": try await MediaCommand.run()
     case "play": try await PlayCommand.run()
     case "view": ViewCommand.run()
     case "extras": try await ExtrasCommand.run()

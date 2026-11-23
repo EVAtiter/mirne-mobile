@@ -107,6 +107,22 @@ final class ViewerOverlayState {
     }
 }
 
+/// 再生の窓（画面）の中身：メディアなら OS の標準の再生画面、録画・ライブなら `ViewerStage`。
+/// 窓は 1 つで共有し、中身だけを替える（同時には鳴らない。窓を閉じたときの後始末は外側の器が持つ）
+struct ViewerContent: View {
+    let overlay: ViewerOverlayState
+    @Environment(AppEnvironment.self) private var environment
+
+    var body: some View {
+        if let media = environment.mediaPlayback {
+            // ファイルが替わったら作り直す（前のファイルの AVPlayer を止める）
+            MediaPlayerView(playback: media).id(media.url)
+        } else {
+            ViewerStage(overlay: overlay)
+        }
+    }
+}
+
 /// 映像・字幕・状態の表示と、操作部の重ね出し（視聴の画面の中身）。
 /// 字幕は mirne の重ね出しを写した。
 /// ライブ：位置のつまみ・←→ を隠し、操作部の左に局のメニューを出す

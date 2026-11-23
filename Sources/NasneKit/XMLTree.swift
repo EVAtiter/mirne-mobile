@@ -55,6 +55,19 @@ public final class XMLTreeElement: @unchecked Sendable {
     }
 }
 
+/// XML 1.0 の文字の決まり（W3C XML 1.0 の Char）のうち、制御文字にかかわる値
+enum XMLControlCharacters {
+    /// これより小さい値は、下の 3 つを除いて使えない
+    static let firstAllowed: UInt8 = 0x20
+    /// 使える制御文字（TAB・LF・CR）
+    static let allowed: Set<UInt8> = [0x09, 0x0A, 0x0D]
+    /// 文字参照の頭
+    static let referencePrefix = "&#"
+    /// 使えない制御文字を指す文字参照（16 進：0〜8・B・C・E〜1F、10 進：0〜8・11・12・14〜31。頭の 0 は何個でも）
+    static let invalidReference = try! NSRegularExpression(
+        pattern: "&#(?:[xX]0*(?:[0-8bBcCeEfF]|1[0-9a-fA-F])|0*(?:[0-8]|1[1-24-9]|2[0-9]|3[01]));")
+}
+
 /// XML の文字列を木にする
 public enum XMLTree {
     /// 読めなければ投げる（source は誤りの出所の名前）
@@ -64,7 +77,7 @@ public enum XMLTree {
 
     public static func parse(_ data: Data, source: String) throws -> XMLTreeElement {
         let builder = Builder()
-        let parser = XMLParser(data: data)
+        let parser = XMLParser(data: removingInvalidControlCharacters(data))
         parser.shouldProcessNamespaces = false
         parser.shouldResolveExternalEntities = false
         parser.delegate = builder
@@ -73,6 +86,27 @@ public enum XMLTree {
             throw NasneError.parse(source, "XML として読めない：\(reason)")
         }
         return root
+    }
+
+    /// XML 1.0 で使えない制御文字（U+0000〜U+001F のうち TAB・LF・CR を除くもの）を、生の値と文字参照
+    /// （`&#x1B;`・`&#27;` など）の両方から取り除く。
+    ///
+    /// `XMLParser` はどちらに当たっても文書全体を読むのをやめる（2026-11-23 に確かめた。誤り 111）。録画の説明文などに
+    /// まれに混じることが外部の記事で報告されていて（DLNA の DIDL の `dc:description`）、そのままだと Browse の 1 頁が丸ごと
+    /// 読めなくなる。どれも表示に意味の無い文字なので、読む前に除いて残りを読む。UTF-8 では 0x00〜0x1F の 1 バイトが
+    /// ほかの文字の途中に現れないので、バイト単位で除いてよい。入れ子の文書（SOAP の `Result` に入った DIDL）は、
+    /// 外と中のそれぞれを読むときにここを通る
+    static func removingInvalidControlCharacters(_ data: Data) -> Data {
+        let hasRawControl = data.contains { $0 < XMLControlCharacters.firstAllowed && !XMLControlCharacters.allowed.contains($0) }
+        let hasReference = data.range(of: Data(XMLControlCharacters.referencePrefix.utf8)) != nil
+        guard hasRawControl || hasReference else { return data }
+        var bytes = data.filter { $0 >= XMLControlCharacters.firstAllowed || XMLControlCharacters.allowed.contains($0) }
+        if hasReference, let text = String(data: bytes, encoding: .utf8) {
+            let cleaned = XMLControlCharacters.invalidReference.stringByReplacingMatches(
+                in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+            bytes = Data(cleaned.utf8)
+        }
+        return bytes
     }
 
     /// 接頭辞を外す（`u:Browse` → `Browse`）

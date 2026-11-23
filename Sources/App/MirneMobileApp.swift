@@ -32,6 +32,15 @@ struct MirneMobileApp: App {
         // 視聴ウィンドウは再生を始めたときに開くものなので、復元しない
         .restorationBehavior(.disabled)
         .commands { AppCommands(environment: environment) }
+
+        // メディア（共有フォルダー）の写真。開いたフォルダーの写真ごとに 1 つ（動画・音楽は「再生」の窓を共有する）
+        WindowGroup("写真", id: MediaPhotoWindowID.main, for: MediaPhotoAlbum.self) { $album in
+            if let album {
+                MediaPhotoView(album: album)
+            }
+        }
+        .defaultSize(MediaPhotoLayout.defaultSize)
+        .restorationBehavior(.disabled)
     }
 }
 
