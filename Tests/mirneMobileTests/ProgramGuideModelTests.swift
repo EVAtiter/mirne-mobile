@@ -123,6 +123,24 @@ struct ProgramGuideModelTests {
         #expect(versions.load() != nil)
     }
 
+    @Test("見回りの取り直しは状態を変えない（届かなくても失敗を出さず、版数表が同じなら前の状態のまま）")
+    func quietFailureKeepsState() async throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let guide = CountingGuide()
+        let model = ProgramGuideModel(service: guide, store: try EPGStore(fileURL: url),
+                                      versions: MemoryProgramGuideVersionStore(), now: { programDay })
+        await model.refresh()
+        let before = model.state
+        guide.setFails(true)
+        await model.refreshQuietly()
+        #expect(model.state == before)
+        // 版数表が同じなら、状態を変えずに終える（読んでいる間も checking にしない）
+        guide.setFails(false)
+        await model.refreshQuietly()
+        #expect(model.state == before)
+    }
+
     @Test("取り直している間にもう一度頼んでも、EPGGet は 1 回だけ")
     func doesNotFetchTwice() async throws {
         let url = temporaryStoreURL()

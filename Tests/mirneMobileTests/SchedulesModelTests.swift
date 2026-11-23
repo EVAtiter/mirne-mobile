@@ -112,8 +112,25 @@ private final class FixedSchedules: ScheduleService, Sendable {
 }
 
 /// チャンネル一覧だけを返す本体情報
+/// 集約ステータスの予約の一覧の世代（試験の途中で変える。nil は読めない）
+private final class FakeLiveGenerations: Sendable {
+    private let state = Mutex<(generation: Int?, reads: Int)>((nil, 0))
+    func set(_ generation: Int?) { state.withLock { $0.generation = generation } }
+    var reads: Int { state.withLock { $0.reads } }
+    func read() throws -> Int {
+        let generation = state.withLock { state -> Int? in
+            state.reads += 1
+            return state.generation
+        }
+        guard let generation else { throw NasneError.unreachable("webapi:/status/liveStreamStatusListGet", cause: URLError(.timedOut)) }
+        return generation
+    }
+}
+
 private struct NamedChannels: DeviceInfoService {
     var fails = false
+    /// 世代を返す（nil なら集約ステータスは読めない）
+    var live: FakeLiveGenerations?
     func channels(broadcastingType: Int) async throws -> [Channel] {
         if fails { throw NasneError.unreachable("webapi:/status/channelListGet", cause: URLError(.timedOut)) }
         return [Channel(broadcastingType: BroadcastingType.terrestrial, networkID: 0x7E00, transportStreamID: 0x7E00,
@@ -122,7 +139,10 @@ private struct NamedChannels: DeviceInfoService {
     func deviceInfo() async throws -> DeviceInfo { throw NasneError.validation("test", "使わない") }
     func hddList() async throws -> [HDDEntry] { [] }
     func hddInfo(id: Int) async throws -> HDDInfo { throw NasneError.validation("test", "使わない") }
-    func liveStatus() async throws -> LiveStatus { throw NasneError.validation("test", "使わない") }
+    func liveStatus() async throws -> LiveStatus {
+        guard let live else { throw NasneError.validation("test", "使わない") }
+        return LiveStatus(json: JSONObject(["tvTimerList": ["generation": try live.read()]]))
+    }
     func recNgList() async throws -> [RecNgItem] { [] }
     func titleCounts() async throws -> (count: Int, max: Int) { (0, 0) }
 }
@@ -164,7 +184,7 @@ struct SchedulesModelTests {
 
     @Test("開始の早い順（同じ開始は局の serviceID の順）に並べ、局名を引く。引けない局は serviceID のまま")
     func sortsAndNames() async throws {
-        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
         await model.reload()
         #expect(model.sortedSchedules.map(\.id) == ["2", "1", "3"])
         #expect(model.channelName(model.sortedSchedules[0].channel) == "テスト局1")
@@ -174,7 +194,7 @@ struct SchedulesModelTests {
 
     @Test("局名が読めなくても予約の一覧は出す")
     func channelFailureKeepsList() async throws {
-        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels(fails: true)))
+        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels(fails: true)), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(fails: true)))
         await model.reload()
         #expect(model.sortedSchedules.count == 3)
         #expect(model.channelName(model.sortedSchedules[0].channel) == "サービス 0x41f0")
@@ -183,7 +203,7 @@ struct SchedulesModelTests {
     @Test("予約が読めなければ失敗を出す。選んだ予約は、読み直して無くなれば外す")
     func failureAndSelection() async throws {
         let service = FixedSchedules(try schedules(sample))
-        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
         await model.reload()
         model.selectedID = "3"
         #expect(model.selectedSchedule?.id == "3")
@@ -200,6 +220,82 @@ struct SchedulesModelTests {
             return
         }
         #expect(error.canRetry)
+    }
+
+    @Test("見回り：世代が前と同じなら一覧を読まず、違えば読み込み中を挟まず差し替える。まだ読んでいなければ何もしない。選んだ予約は無くなれば外す")
+    func refreshWhenGenerationChanges() async throws {
+        let service = FixedSchedules(try schedules(sample))
+        let live = FakeLiveGenerations()
+        live.set(85)
+        let device = NamedChannels(live: live)
+        let monitor = LiveStatusMonitor(deviceInfo: device)
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: monitor)
+        await monitor.poll()
+        await model.refreshIfChanged()
+        #expect(model.schedules == .idle)   // 最初の読み込みは reload が受け持つ
+        await model.reload()
+        model.selectedID = "3"
+        service.set(try schedules(Array(sample.suffix(2))))
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.count == 3)   // 世代が同じなので読まない
+        live.set(86)
+        await monitor.poll()
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.map(\.id) == ["1", "2"])
+        #expect(model.selectedID == nil)
+        // 一覧が読めなければ今の一覧を残し、世代も覚えない（次の見回りでもう一度読む）
+        live.set(87)
+        await monitor.poll()
+        service.setFails(true)
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.map(\.id) == ["1", "2"])
+        service.setFails(false)
+        service.set(try schedules(Array(sample.suffix(1))))
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.map(\.id) == ["2"])
+    }
+
+    @Test("集約ステータスの見回り：読めたら世代を持ち、読めなければ nil にする（古い世代のまま変わっていないと見なさない）")
+    func monitorDropsGenerationOnFailure() async {
+        let live = FakeLiveGenerations()
+        let monitor = LiveStatusMonitor(deviceInfo: NamedChannels(live: live))
+        live.set(85)
+        await monitor.poll()
+        #expect(monitor.generations?.schedules == 85)
+        live.set(nil)
+        await monitor.poll()
+        #expect(monitor.generations == nil)
+    }
+
+    @Test("読み直すかの判断：世代が読めれば前と違うときだけ。読めなければ前に読んでから決まった間が経ったら。まだ読んでいなければ読む")
+    func refreshTracker() {
+        var tracker = ListRefreshTracker(fallbackInterval: 15)
+        let start = Date(timeIntervalSince1970: 0)
+        #expect(tracker.needsRefresh(observed: nil, now: start))
+        #expect(tracker.needsRefresh(observed: 5, now: start))
+        tracker.noteRead(generation: 5, at: start)
+        #expect(!tracker.needsRefresh(observed: 5, now: start.addingTimeInterval(100)))
+        #expect(tracker.needsRefresh(observed: 6, now: start))
+        #expect(!tracker.needsRefresh(observed: nil, now: start.addingTimeInterval(14)))
+        #expect(tracker.needsRefresh(observed: nil, now: start.addingTimeInterval(15)))
+    }
+
+    @Test("見回り：世代が読めないときは、一覧を読んでから決まった間がたつまで読まない")
+    func fallbackWithoutGeneration() async throws {
+        let service = FixedSchedules(try schedules(sample))
+        let live = FakeLiveGenerations()   // 読めない
+        let device = NamedChannels(live: live)
+        let clock = Mutex(Date(timeIntervalSince1970: 0))
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: LiveStatusMonitor(deviceInfo: device),
+                                   now: { clock.withLock { $0 } })
+        await model.reload()
+        service.set(try schedules(Array(sample.suffix(2))))
+        clock.withLock { $0 = $0.addingTimeInterval(SchedulesRefresh.fallbackInterval - 1) }
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.count == 3)
+        clock.withLock { $0 = $0.addingTimeInterval(1) }
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.count == 2)
     }
 
     @Test("時期：始まる前・録画中・終わった")
@@ -495,7 +591,7 @@ struct ScheduleWriteTests {
     func deleteReloads() async throws {
         let list = try schedules(sample)
         let service = FixedSchedules(list)
-        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
         await model.reload()
         #expect(await model.delete(list[0]) == nil)
         #expect(model.sortedSchedules.count == 2)

@@ -40,6 +40,11 @@ enum ScpdCommand {
             let actions = root.firstDescendant(named: "actionList")?.children(named: "action") ?? []
             let names = actions.compactMap { $0.childText("name")?.trimmed }
             say("  アクション \(names.count) 件: \(names.joined(separator: "・"))")
+            // 変わったことを知らせる（GENA で通知する）状態変数と、購読の口の有無
+            let evented = (root.firstDescendant(named: "serviceStateTable")?.children(named: "stateVariable") ?? [])
+                .filter { $0.attributes["sendEvents"]?.trimmed.lowercased() == "yes" }
+                .compactMap { $0.childText("name")?.trimmed }
+            say("  知らせる状態変数 \(evented.count) 件: \(evented.isEmpty ? "なし" : evented.joined(separator: "・"))・購読の口 \(service.eventSubURL == nil ? "なし" : "あり")")
             for action in actions {
                 guard let name = action.childText("name")?.trimmed,
                       keywords.contains(where: { name.localizedCaseInsensitiveContains($0) }) else { continue }

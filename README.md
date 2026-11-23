@@ -98,7 +98,7 @@ Main keys in the viewer window:
 | T | Always on top |
 | ⌘0 | Back to the standard size |
 
-In the main window, ⌘1–⌘5 switch screens, ⌘R refreshes, and ⌘N creates a new schedule.
+In the main window, ⌘1–⌘5 switch screens and ⌘N creates a new schedule. Each screen keeps itself up to date by watching nasne for changes, so there is no refresh button.
 
 On the iPhone and iPad:
 
@@ -111,7 +111,7 @@ On the iPhone and iPad:
 - In the playback screen, tap to show or hide the controls and close it with × at the top left. The
   volume follows the device's volume buttons. With a hardware keyboard, the keys above work, except F,
   Esc, T, and ⌘0
-- With a hardware keyboard, ⌘1–⌘5, ⌘R, ⌘N, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
+- With a hardware keyboard, ⌘1–⌘5, ⌘N, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
   work in the main screen
 
 ## About DTCP-IP credentials

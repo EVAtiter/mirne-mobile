@@ -28,11 +28,10 @@ struct RecordingsView: View {
     }
 
     private var screen: some View {
-        // 上の帯（番組表と同じ位置）に検索・絞り込み・並べ替えと「更新」。帯の下の横線で、左右の仕切りの縦線を止める
+        // 上の帯（番組表と同じ位置）に検索・絞り込み・並べ替えと件数。帯の下の横線で、左右の仕切りの縦線を止める
         // （仕切りの縦線がツールバーまで突き抜けていた。2026-11-20）
         VStack(spacing: 0) {
-            ScreenActionBar(refreshHelp: "録画の一覧を更新する（⌘R）", isRefreshing: model.isRefreshing || model.isCompletingMetadata,
-                            refresh: { Task { await model.reload() } }, status: listStatus) {
+            ScreenActionBar(status: listStatus) {
                 RecordingsFilterBar(model: model)
             }
             // 一覧は窓の幅いっぱい。選んだ録画の情報は一覧に重ねるカードに出す（2026-11-22。前は右に区切った情報の欄）
@@ -46,15 +45,14 @@ struct RecordingsView: View {
         .selectionCardSheet(isPresented: showsCardSheet, close: { model.selectedID = nil }, onDismiss: runAfterCardSheet) {
             deletionAlert(card, isPresented: pendingDeletion != nil)
         }
-        // 検索・視聴の状態・まとめる・並べ替えと「更新」は上の帯（ツールバーから一覧の上へ、のちに画面の上の帯へ移した）
+        // 検索・視聴の状態・まとめる・並べ替えは上の帯（ツールバーから一覧の上へ、のちに画面の上の帯へ移した）
         .task { if model.titles == .idle { await model.reload() } }
-        // メニュー：録画を削除…（⌘⌫。選んだ録画で確かめを出す）・更新（⌘R）
+        // メニュー：録画を削除…（⌘⌫。選んだ録画で確かめを出す）
         .onChange(of: environment.mainCommands.pending, initial: true) {
             let center = environment.mainCommands
             if center.consume(.deleteRecording), let title = model.selectedTitle, model.deletionBlocker(title) == nil {
                 pendingDeletion = title
             }
-            if center.consume(.refresh) { Task { await model.reload() } }
         }
     }
 
@@ -211,15 +209,14 @@ struct RecordingsView: View {
         }
     }
 
-    /// 一覧の状態：件数と取得日時だけ。上の帯の右（番組表の「… に更新」と同じ位置）に出す。
-    /// 前は一覧の下の欄に上限・まとめの行数も出していた（2026-11-21 で件数と取得日時だけにした）。
+    /// 一覧の状態：件数だけ。上の帯の右に出す。
+    /// 前は一覧の下の欄に上限・まとめの行数も出していた（2026-11-21 で件数と取得日時だけにし、2026-11-24 に取得日時も外した。
+    /// 一覧は世代の見回りで自分で読み直すので、いつ取ったかを見せる意味が薄い）。
     /// 絞り込んでいるときは「出している件数 / 全部の件数」
     private var listStatus: String? {
         guard case .loaded(let all) = model.titles else { return nil }
         let visible = model.visibleTitles.count
-        var text = visible == all.count ? "\(all.count) 件" : "\(visible) / \(all.count) 件"
-        if let fetchedAt = model.fetchedAt { text += "・\(ProgramGuide.receivedLabel(fetchedAt)) に取得" }
-        return text
+        return visible == all.count ? "\(all.count) 件" : "\(visible) / \(all.count) 件"
     }
 
     /// まとめの行を開く・閉じる（ダブルクリック）
@@ -338,10 +335,12 @@ struct RecordingsFilterBar: View {
                 // 絞っている間は塗った絵
                 Image(systemName: model.viewingFilter == .all ? RecordingsFilterSymbol.viewing : RecordingsFilterSymbol.viewingActive)
             }
+            .barButtonChrome()
             .accessibilityLabel("視聴の状態：\(RecordingViewingFilterLabel.text(model.viewingFilter))")
             Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)
+                .barToggleChrome(isOn: model.groupsByName)
                 .fixedSize()
             Menu {
                 Picker("並べ替え", selection: $model.sortOrder) {
@@ -350,6 +349,7 @@ struct RecordingsFilterBar: View {
             } label: {
                 Image(systemName: RecordingsFilterSymbol.sort)
             }
+            .barButtonChrome()
             .accessibilityLabel("並べ替え：\(RecordingSortLabel.text(model.sortOrder))")
         }
         .fixedSize()
@@ -363,10 +363,12 @@ struct RecordingsFilterBar: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
+            .barMenuChrome()
             .help("視聴の状態：まだ見ていない録画・途中まで見た録画だけを出す")
             Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
                 .toggleStyle(.button)
                 .labelStyle(groupTitle ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly))
+                .barToggleChrome(isOn: model.groupsByName)
                 .fixedSize()
                 .help("同じ番組名の録画を 1 行にまとめる（番組マーク・話数・副題を除いた名前で）")
             Picker("並べ替え", selection: $model.sortOrder) {
@@ -375,6 +377,7 @@ struct RecordingsFilterBar: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
+            .barMenuChrome()
             .help("並べ替え")
         }
     }

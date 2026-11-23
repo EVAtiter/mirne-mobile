@@ -21,7 +21,22 @@ fileprivate final class FakeMedia: MediaLibraryService, @unchecked Sendable {
     func listing(folderID: String, kind: MediaKind) async throws -> MediaListing {
         lock.withLock { calls.append(folderID) }
         if let failure { throw failure }
-        return MediaListing(folders: [], files: [MediaFile(id: folderID + "/con1", title: "試し", kind: kind, original: nil)])
+        let count = lock.withLock { files }
+        return MediaListing(folders: [], files: (1...count).map {
+            MediaFile(id: folderID + "/con\($0)", title: "試し\($0)", kind: kind, original: nil)
+        })
+    }
+
+    /// フォルダーの中のファイルの数（試験の途中で変える）
+    private var files = 1
+    /// 中身の版（nil なら読めない）
+    private var version: Int? = 1
+    func setFiles(_ count: Int) { lock.withLock { files = count } }
+    func setVersion(_ value: Int?) { lock.withLock { version = value } }
+
+    func updateID() async throws -> Int {
+        guard let version = lock.withLock({ version }) else { throw URLError(.timedOut) }
+        return version
     }
 }
 
@@ -39,6 +54,26 @@ struct MediaModelTests {
                                      titles: real.titles, programGuide: real.programGuide, liveCatalog: real.liveCatalog,
                                      media: media, nasneHomeURL: real.nasneHomeURL)
         return MediaModel(services: services)
+    }
+
+    @Test("見回り：中身の版が同じなら読まず、変われば今の場所を読み直してほかに覚えた場所を捨てる。版が読めなければ何もしない")
+    func refreshWhenUpdateIDChanges() async throws {
+        let model = try model()
+        let folder = MediaFolder(id: "0/video/folder/fol1", title: "share1", kind: .video)
+        await model.show(.root(.video))
+        await model.show(.folder(folder))
+        let before = media.requested.count
+        await model.refreshIfChanged()
+        #expect(media.requested.count == before)
+        media.setFiles(2)
+        media.setVersion(2)
+        await model.refreshIfChanged()
+        #expect(model.listing(at: .folder(folder)).value?.files.count == 2)
+        #expect(model.listing(at: .root(.video)) == .idle)   // 捨てた（次に開いたときに読む）
+        media.setFiles(3)
+        media.setVersion(nil)
+        await model.refreshIfChanged()
+        #expect(model.listing(at: .folder(folder)).value?.files.count == 2)
     }
 
     @Test("種類の根を開くと共有フォルダーを読み、フォルダーを開くとその中を読む")

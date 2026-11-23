@@ -4,15 +4,25 @@ import SwiftUI
 struct InfoView: View {
     @State var model: InfoModel
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
-            // 上の帯（番組表と同じ位置）。情報の画面の操作は「更新」だけ
-            ScreenActionBar(refreshHelp: "情報を更新する（⌘R）", isRefreshing: model.isLoading,
-                            refresh: { Task { await model.reload() } }) { EmptyView() }
+            // 上の帯（番組表と同じ位置）。情報の画面の操作は無い（右端の「ライブ」「設定」だけ）
+            ScreenActionBar(hasLeading: false) { EmptyView() }
             form
         }
         .navigationTitle("情報")
+        // 見回り（MainView が回す）が読んだ世代や選局の状態が変わったら読み直す
+        .onChange(of: model.observedSignature) { Task { await model.refreshIfChanged() } }
+        // HDD の使用量など世代に出ない変化のために、開いていて前面にある間は決まった間で読み直す
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(InfoRefresh.periodicInterval))
+                await model.refreshQuietly()
+            }
+        }
         .task {
             if model.lastUpdated == nil { await model.reload() }
             #if DEBUG
@@ -27,7 +37,6 @@ struct InfoView: View {
         }
         #endif
         .onChange(of: environment.mainCommands.pending, initial: true) {
-            if environment.mainCommands.consume(.refresh) { Task { await model.reload() } }
         }
     }
 

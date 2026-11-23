@@ -1,7 +1,7 @@
 import SwiftUI
 
 // iPad のメニュー（iPadOS 26 からのメニューバーと、⌘ を押し続けると出るキーボードのショートカットの一覧）。
-// 主画面の操作だけを置く：設定（⌘,）・ライブで見る（⌘L）・新規予約（⌘N）・検索（⌘F）・画面の切り替え（⌘1〜4）・更新（⌘R）。
+// 主画面の操作だけを置く：設定（⌘,）・ライブで見る（⌘L）・新規予約（⌘N）・検索（⌘F）・画面の切り替え（⌘1〜5）。
 // 再生の画面の文字だけのキー（スペース・←→ など）は、再生の画面が自分で受ける（メニューには置かない）。
 // 頼みは macOS と同じく `MainCommandCenter` に置き、主画面が受け取って行う
 
@@ -28,11 +28,9 @@ struct IPadCommands: Commands {
             IPadCommandButton(environment: environment, title: "検索", request: .searchRecordings, section: .recordings)
                 .keyboardShortcut("f", modifiers: .command)
         }
-        // 表示：画面の切り替え・更新
+        // 表示：画面の切り替え
         CommandGroup(before: .toolbar) {
             IPadSectionItems(environment: environment)
-            IPadCommandButton(environment: environment, title: "更新", request: .refresh, section: nil)
-                .keyboardShortcut("r", modifiers: .command)
         }
     }
 }

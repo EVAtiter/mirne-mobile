@@ -188,7 +188,12 @@ enum MediaCommand {
     static func run() async throws {
         let host = requiredHost()
         let (device, _) = try await connect(host)
-        let media = DLNAMediaLibraryService(catalog: RecordingCatalogService(soap: SOAPTransport(client: client), device: device))
+        let catalog = RecordingCatalogService(soap: SOAPTransport(client: client), device: device)
+        // 中身の版（共有フォルダーや録画が変わると進むかを見る）
+        let updateStart = Date()
+        do { say("SystemUpdateID: \(try await catalog.systemUpdateID())（\(elapsed(updateStart))）") } catch { say("SystemUpdateID: 読めなかった・\(error)") }
+        if flag("--update-id") { return }
+        let media = DLNAMediaLibraryService(catalog: catalog)
         for kind in MediaKind.allCases {
             let start = Date()
             var folders = 0

@@ -1,24 +1,30 @@
 import SwiftUI
 
-/// 主ウインドウの各画面の上の帯。番組表の帯（`GuideToolbar`）と同じ位置・寸法で、左に画面の操作、右端に「更新」を置く。
+/// 主ウインドウの各画面の上の帯。番組表の帯（`GuideToolbar`）と同じ位置・寸法で、左に画面の操作、右に一覧の状態と「ライブ」「設定」を置く。
 ///
-/// 前は「更新」をツールバーの右端（「設定」の右）に、録画の検索・絞り込みと予約の「新規予約」を一覧の上の帯に置いていたが、
-/// 番組表だけ「更新」が画面の上の帯にあって揃っていなかった。番組表に合わせて、予約・録画・情報にも同じ帯を置き、
-/// 「更新」と画面の操作をそこに集めた（2026-11-21）。右端には「ライブ」「設定」も置く（2026-11-23 から。iPhone の縦向き・iPad の狭い分割は上の帯の右端）
+/// 番組表に合わせて、予約・録画・情報にも同じ帯を置いた（2026-11-21）。右端には「ライブ」「設定」も置く（2026-11-23 から。
+/// iPhone の縦向き・iPad の狭い分割は上の帯の右端）。「更新」は 2026-11-24 に外した（各画面が nasne の一覧の世代を見回って自分で読み直す）
 struct ScreenActionBar<Leading: View>: View {
-    /// 「更新」のボタンの説明（マウスを載せると出す）
-    let refreshHelp: String
-    /// 取り直している間は「更新」を押せない
-    let isRefreshing: Bool
-    let refresh: () -> Void
-    /// 「更新」の左に出す一覧の状態（録画の件数と取得日時。番組表の「… に更新」と同じ位置。窓が狭くて入らなければ出さない）
+    /// 右に出す一覧の状態（録画の件数。窓が狭くて入らなければ出さない）
     var status: String? = nil
+    /// 左の操作があるか（無い画面〔情報・メディアの種類を選ぶ画面〕で、ほかにも載せるものが無ければ帯を出さない）
+    var hasLeading = true
     @ViewBuilder let leading: Leading
 
     /// 帯の中央に出す画面の名前（上の帯を隠しているとき。主画面が配る）
     @Environment(\.mainBarTitle) private var title
+    /// 右端の「ライブ」「設定」（iPhone の縦向き・iPad の狭い分割では上の帯に出すので配られない）
+    @Environment(\.mainBarAccessories) private var accessories
+
+    /// 載せるものが何も無いか（左の操作・一覧の状態・画面の名前・「ライブ」「設定」のどれも無い）。
+    /// 「更新」を外した後、iPhone の縦向きの情報の画面などで、空の帯と横線だけが残った（2026-11-24）
+    private var isEmpty: Bool { !hasLeading && status == nil && title == nil && accessories == nil }
 
     var body: some View {
+        if !isEmpty { bar }
+    }
+
+    private var bar: some View {
         VStack(spacing: 0) {
             Group {
                 if let title {
@@ -30,7 +36,6 @@ struct ScreenActionBar<Leading: View>: View {
                             MainBarTitle(text: title)
                             HStack(spacing: ScreenActionBarLayout.spacing) {
                                 if let status { BarStatusText(text: status) }
-                                ScreenRefreshButton(help: refreshHelp, isRefreshing: isRefreshing, action: refresh)
                                 MainBarAccessoryButtons()
                             }
                         }
@@ -45,20 +50,19 @@ struct ScreenActionBar<Leading: View>: View {
         }
     }
 
-    /// 名前を出さない帯（左の操作・一覧の状態・「更新」・右端の「ライブ」「設定」）
+    /// 名前を出さない帯（左の操作・一覧の状態・右端の「ライブ」「設定」）
     private var row: some View {
         HStack(spacing: ScreenActionBarLayout.spacing) {
             ScreenActionBarRow(spacing: ScreenActionBarLayout.spacing) {
                 leading
                 BarStatusText(text: status ?? "")
-                ScreenRefreshButton(help: refreshHelp, isRefreshing: isRefreshing, action: refresh)
             }
             MainBarAccessoryButtons()
         }
     }
 }
 
-/// 帯の状態の文字（録画の件数と取得日時・番組表の「… に更新」）。帯のボタンの文字と同じ大きさにする（2026-11-21）。
+/// 帯の状態の文字（録画の件数）。帯のボタンの文字と同じ大きさにする（2026-11-21）。
 /// ボタンの文字は主ウインドウの文字の倍率がかからず、部品の大きさ（「標準」は regular・「大きい」は large）の macOS の文字の大きさで描かれる。
 /// 前は倍率をかけた callout で、ボタンの文字より大きく見えた
 struct BarStatusText: View {
@@ -74,23 +78,7 @@ struct BarStatusText: View {
     }
 }
 
-/// 帯の「更新」（絵だけ。⌘R は表示のメニューの「更新」が受け持つ）
-struct ScreenRefreshButton: View {
-    let help: String
-    let isRefreshing: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button("更新", systemImage: "arrow.clockwise", action: action)
-            .labelStyle(.iconOnly)
-            // iOS はナビゲーションの帯のボタンと同じ形（OS ごと）
-            .barButtonChrome()
-            .disabled(isRefreshing)
-            .help(help)
-    }
-}
-
-/// 帯の 1 段の並べ方（左の操作・一覧の状態・「更新」。左の操作は無いこともある）。左の操作は左に寄せ、一覧の状態と「更新」は右に寄せる。
+/// 帯の 1 段の並べ方（左の操作・一覧の状態。左の操作は無いこともある）。左の操作は左に寄せ、一覧の状態は右に寄せる。
 /// 一覧の状態は、左の操作が本来の幅で入り、さらに一覧の状態も入るときだけ出す（入らなければ出さない。2026-11-21）。
 /// `ViewThatFits` で包む形では、左の操作が縮める分を数えずに決めるので、最小の窓でも一覧の状態が残って帯がはみ出した
 struct ScreenActionBarRow: Layout {
@@ -103,20 +91,14 @@ struct ScreenActionBarRow: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        // 後ろの 2 つが一覧の状態と「更新」。左の操作が無い（EmptyView）ときは部品が 2 つになる（情報の画面）
-        guard subviews.count >= 2 else { return }
-        let refresh = subviews[subviews.count - 1]
-        let status = subviews[subviews.count - 2]
-        let leading = subviews.count >= 3 ? subviews[0] : nil
-        let refreshSize = refresh.sizeThatFits(.unspecified)
+        // 最後が一覧の状態。左の操作が無い（EmptyView）ときは部品が 1 つになる（情報の画面）
+        guard let status = subviews.last else { return }
+        let leading = subviews.count >= 2 ? subviews[0] : nil
         let statusSize = status.sizeThatFits(.unspecified)
         // 左の操作の本来の幅は、十分に広い幅を渡して測る（.unspecified だと、中の ViewThatFits が詰めた形の幅を返し、
         // 件数を出すために「番組名でまとめる」が絵だけになった。件数はいちばん後回し。2026-11-21）
         let leadingIdeal = leading?.sizeThatFits(ProposedViewSize(width: .infinity, height: nil)).width ?? 0
-        // 「更新」は右端
-        let refreshOrigin = CGPoint(x: bounds.maxX - refreshSize.width, y: bounds.midY - refreshSize.height / 2)
-        refresh.place(at: refreshOrigin, proposal: ProposedViewSize(refreshSize))
-        var right = refreshOrigin.x - spacing
+        var right = bounds.maxX
         // 一覧の状態：左の操作が本来の幅で入るときだけ
         let showsStatus = statusSize.width > 0 && leadingIdeal + spacing + statusSize.width + spacing <= right - bounds.minX
         if showsStatus {
@@ -153,6 +135,8 @@ extension EnvironmentValues {
     @Entry var mainBarTitle: String? = nil
     /// 上の帯（画面の名前）を隠しているか（iPad の広い幅と iPhone の横向き。各画面の帯が画面の上端に来るので、上の余白を詰めない。主画面が配る）
     @Entry var mainTitleBarHidden = false
+    /// 上の帯に画面の操作も置いているか（iPhone の縦向き・iPad の狭い分割。予約の「新規予約」は上の帯の左に出し、各画面の帯には置かない。主画面が配る）
+    @Entry var mainTitleBarHasActions = false
 }
 
 /// 帯の中央の画面の名前（ナビゲーションの帯の名前と同じ形）
@@ -214,7 +198,7 @@ enum BarSearchFieldLayout {
 }
 
 /// 帯の段の高さの見本（見えない。幅 0）：帯に入る背の高い部品（録画の検索の欄・番組表の前後の日のボタン・メニューの選択・ボタンの形の切り替え）を重ねる。
-/// どの画面の帯にも入れるので、段の高さは中身によらずこの高さ以上になり、「更新」が同じ位置に来る。
+/// どの画面の帯にも入れるので、段の高さは中身によらずこの高さ以上になり、右端の操作が同じ位置に来る。
 /// 文字の大きさの設定が変わっても部品と一緒に伸びる（決め打ちの高さでは、iPad の実機で揃わなかった。2026-11-23）
 private struct BarRowHeightProbe: View {
     @Environment(\.usesCompactLayout) private var compact
@@ -256,7 +240,7 @@ enum ScreenActionBarLayout {
     static let verticalPadding: CGFloat = 8
     /// 狭い幅の帯の上の余白（帯の上にはナビゲーションの帯の余白があり、上下で同じ 8 にすると上が空いて見えた。2026-11-23）
     static let compactTopPadding: CGFloat = 0
-    /// 狭い幅の帯の段の高さ（中身でなくこの高さに揃え、どの画面でも「更新」が同じ位置に来るようにする。2026-11-23。
+    /// 狭い幅の帯の段の高さ（中身でなくこの高さに揃え、どの画面でも右端の操作が同じ位置に来るようにする。2026-11-23。
     /// いちばん高い録画の検索の欄（約 37pt）が入る高さ。32 では録画と番組表の帯だけ高くなり、揃わなかった）
     static let compactRowHeight: CGFloat = 38
 }

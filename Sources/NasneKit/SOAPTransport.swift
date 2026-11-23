@@ -12,6 +12,8 @@ public struct SOAPResponse: Sendable {
     public var numberReturned: Int? { values["NumberReturned"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } }
     /// `TotalMatches`（全体の件数）
     public var totalMatches: Int? { values["TotalMatches"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } }
+    /// `Id`（ContentDirectory の `GetSystemUpdateID` の値。中身が変わるたびに進む UPnP の数）
+    public var systemUpdateID: Int? { values["Id"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } }
 }
 
 /// UPnP SOAP の転送層。

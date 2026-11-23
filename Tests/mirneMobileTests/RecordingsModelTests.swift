@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Synchronization
 import Testing
 
 // 録画一覧と詳細。
@@ -40,6 +41,39 @@ struct RecordingsModelTests {
         model.sortOrder = .oldestFirst
         let oldest = model.visibleTitles.compactMap(\.start)
         #expect(oldest == oldest.sorted())
+    }
+
+    @Test("見回り：録画の一覧の世代が同じなら読まず、違えば 1 段目だけを読み直す（全件の番組の情報は読まない）。届かなくても知らせない")
+    func refreshWhenGenerationChanges() async throws {
+        let http = catalogHTTP()
+        let generation = Mutex(186)
+        http.respond("/status/liveStreamStatusListGet") { _ in
+            MockHTTP.Reply(status: 200, body: Data(#"{"errorcode":0,"recContentsList":{"generation":\#(generation.withLock { $0 })}}"#.utf8))
+        }
+        let services = try services(http)
+        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        let model = RecordingsModel(services: services, liveStatus: monitor)
+        func count(_ path: String) -> Int { http.sentRequests.filter { $0.url?.path == path }.count }
+        await monitor.poll()
+        await model.reload()
+        let lists = count("/XSRS")
+        let browses = count("/MediaServer_ContentDirectory/control")
+        await model.refreshIfChanged()
+        #expect(count("/XSRS") == lists)
+        generation.withLock { $0 = 191 }
+        await monitor.poll()
+        await model.refreshIfChanged()
+        #expect(count("/XSRS") == lists + 1)
+        #expect(count("/MediaServer_ContentDirectory/control") == browses)
+        #expect(model.titles.value?.count == 2)
+        // 見回りからの取り直しが届かなくても、誤りを知らせず一覧を残す
+        generation.withLock { $0 = 192 }
+        await monitor.poll()
+        http.failNext("/XSRS", method: "POST", count: 10)
+        await model.refreshIfChanged()
+        #expect(model.refreshError == nil)
+        #expect(!model.showsRefreshProgress)
+        #expect(model.titles.value?.count == 2)
     }
 
     @Test("番組名・局名で絞り込む。視聴の状態でも絞り込める")

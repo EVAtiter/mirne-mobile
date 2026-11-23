@@ -52,6 +52,10 @@ public final class RecordingsModel {
     public private(set) var isShowingSavedList = false
     /// nasne から録画一覧を取り直している途中か（1 段目。この間は再生・削除・保護を待つ）
     public private(set) var isRefreshing = false
+    /// 今の取り直しが見回りからのものか（知らせの帯に「更新しています」を出さない）
+    public private(set) var isRefreshingAutomatically = false
+    /// 取り直していることを知らせの帯に出すか（見回りからの取り直しは出さない）
+    public var showsRefreshProgress: Bool { isRefreshing && !isRefreshingAutomatically }
     /// 全件の番組の情報を裏で読んでいる途中か（2 段目。一覧は使える）
     public private(set) var isCompletingMetadata = false
     /// 2 段目の読み込み（読み直したら捨てる）
@@ -73,17 +77,34 @@ public final class RecordingsModel {
     private let viewing: ViewingRecorder?
     private let defaults: UserDefaults
     private let now: @Sendable () -> Date
+    /// 集約ステータスの見回り（録画の一覧の世代。ほかの画面と共通。無ければ世代に頼らない読み直しだけ）
+    private let liveStatus: LiveStatusMonitor?
+    /// 読み直すかの判断（前に一覧を読んだときの世代と時刻）
+    @ObservationIgnored private var tracker = ListRefreshTracker(fallbackInterval: RecordingsRefresh.fallbackInterval)
 
     /// `channels` は、ほかの画面と共通の局の一覧（無ければこのモデルだけのものを作る。試験）
     public init(services: NasneServices, channels: ChannelCatalog? = nil, library: LibraryStore? = nil, viewing: ViewingRecorder? = nil,
-                defaults: UserDefaults = .standard, now: @escaping @Sendable () -> Date = { Date() }) {
+                liveStatus: LiveStatusMonitor? = nil, defaults: UserDefaults = .standard, now: @escaping @Sendable () -> Date = { Date() }) {
         self.services = services
         channelCatalog = channels ?? ChannelCatalog(deviceInfo: services.deviceInfo)
         self.library = library
         self.viewing = viewing
+        self.liveStatus = liveStatus
         self.defaults = defaults
         self.now = now
         groupsByName = defaults.bool(forKey: Self.groupsByNameKey)
+    }
+
+    /// 見回りが最後に読んだ録画の一覧の世代（これが変わったら `refreshIfChanged` を呼ぶ）
+    public var observedGeneration: Int? { liveStatus?.generations?.recordings }
+
+    /// 見回りで読み直す。録画の一覧の世代が前に一覧を読んだときと違うとき（世代が読めないときは `RecordingsRefresh.fallbackInterval` ごと）だけ、
+    /// 1 段目（録画一覧と新しい録画の番組の情報）を読み直す。局の一覧は読み直さず、2 段目（全件の番組の情報。約 11 秒）は、
+    /// 新しい録画が多くて 1 件ずつ補えなかったときだけ読む。まだ一覧を出していない・取り直している途中は何もしない
+    public func refreshIfChanged() async {
+        guard titles.value != nil, !isRefreshing else { return }
+        guard tracker.needsRefresh(observed: observedGeneration, now: now()) else { return }
+        await reload(waitsForMetadata: false, automatic: true)
     }
 
     /// 録画の視聴の状態（手元の記録と nasne の値を合わせたもの）
@@ -183,13 +204,18 @@ public final class RecordingsModel {
     ///
     /// 一覧をまだ出していなければ、保存した一覧があればそれを先に出す。1 段目に失敗したら、一覧はそのままにして `refreshError` を立てる
     /// （出していなければ失敗を出す）。`waitsForMetadata` が偽なら 2 段目を待たずに返る（削除の後の読み直し）
-    public func reload(waitsForMetadata: Bool = true) async {
+    /// `automatic` は見回りからの読み直し（局の一覧を読み直さず、2 段目は要るときだけ）
+    public func reload(waitsForMetadata: Bool = true, automatic: Bool = false) async {
         guard !isRefreshing else { return }
+        // 世代は一覧より先に控える（読んでいる間に変わったら、次の見回りで世代の違いとして見つかる）
+        let listGeneration = observedGeneration
         // 走っている 2 段目は捨てる（結果を使わない）
         metadataGeneration += 1
         metadataTask?.cancel()
         isCompletingMetadata = false
         isRefreshing = true
+        isRefreshingAutomatically = automatic
+        defer { isRefreshingAutomatically = false }
         let udn = services.registration.udn
         if titles.value == nil {
             if let saved = await library?.titleList(udn: udn) {
@@ -207,7 +233,7 @@ public final class RecordingsModel {
         let deviceInfo = services.deviceInfo
         async let countsResult = try? deviceInfo.titleCounts()
         let listing = Task { try await catalog.titles(withMetadata: false) }
-        await channelCatalog.load(reload: true)
+        await channelCatalog.load(reload: !automatic)
         if let channels = channelCatalog.channels.value {
             var order: [Int: Int] = [:]
             for (index, channel) in GuideLineupModel.lineup(channels, showsSubchannels: true).enumerated()
@@ -217,12 +243,14 @@ public final class RecordingsModel {
             channelOrder = order
         }
         let freshCounts = await countsResult
+        let needsFullMetadata: Bool
         do {
             let listed = try await listing.value
             let merged = RecordingListMerge.merge(shown: titles.value ?? [], listed: listed,
                                                   channels: channelCatalog.channels.value ?? [])
             var list = merged.titles
-            if merged.needsMetadata.count <= Self.metadataByItemLimit {
+            needsFullMetadata = merged.needsMetadata.count > Self.metadataByItemLimit
+            if !needsFullMetadata {
                 for id in merged.needsMetadata {
                     guard let index = list.firstIndex(where: { $0.id == id }),
                           let didl = try? await catalog.titleMetadata(id: id) else { continue }
@@ -235,11 +263,13 @@ public final class RecordingsModel {
             counts = freshCounts
             isShowingSavedList = false
             refreshError = nil
+            tracker.noteRead(generation: listGeneration, at: fetched)
             await library?.saveTitleList(SavedTitleList(titles: list, fetchedAt: fetched, counts: freshCounts), udn: udn)
         } catch {
             let presented = ErrorText.present(error)
             if titles.value != nil {
-                refreshError = presented
+                // 見回りからの取り直しの失敗は知らせない（世代は覚えていないので、次の見回りでもう一度読む）
+                if !automatic { refreshError = presented }
             } else {
                 titles = .failed(presented)
             }
@@ -249,6 +279,7 @@ public final class RecordingsModel {
         }
         dropMissingSelection()
         isRefreshing = false
+        if automatic && !needsFullMetadata { return }
 
         // 2 段目：全件の番組の情報
         let generation = metadataGeneration
@@ -566,8 +597,9 @@ public enum RecordingPlayPanel: Sendable, Equatable {
         public static let noSelection = "録画を選ぶと、ここに再生のボタンが出ます"
         /// 前回の起動で保存した一覧を出していて、いま取り直している（2026-11-20 に文言を改めた）
         public static let savedList = "更新しています。終わると再生できます"
-        /// 前回の起動で保存した一覧を出していて、取り直しに失敗した（「更新」で取り直せば押せる。2026-11-20 に分けた）
-        public static let savedListFailed = "更新できませんでした。もう一度更新すると再生できます"
+        /// 前回の起動で保存した一覧を出していて、取り直しに失敗した（知らせの帯の「もう一度読み込む」で取り直せば押せる。2026-11-20 に分けた。
+        /// 2026-11-24 に「更新」のボタンを外したので文言を改めた）
+        public static let savedListFailed = "一覧を読み込めませんでした。「もう一度読み込む」を押すと再生できます"
         public static let starting = "再生を始めています…"
         public static let noResource = "この録画には再生できる画質がありません"
     }
@@ -620,4 +652,10 @@ public struct RecordingPlayAction: Sendable, Equatable, Identifiable {
     public var buttonLabel: String? = nil
 
     public var id: String { label }
+}
+
+/// 録画の一覧の読み直し（体感の値）
+public enum RecordingsRefresh {
+    /// 世代が読めないときに一覧を読み直す間（録画一覧は数百件で約 0.5 秒かかるので、予約の一覧より長くする）
+    public static let fallbackInterval: TimeInterval = 60
 }

@@ -303,6 +303,8 @@ public struct SOAPTable: Sendable {
 
     // ── ContentDirectory ──
     public var browse: SOAPAction { SOAPAction(service: contentDirectory, name: "Browse") }
+    /// 中身の版（`SystemUpdateID`）を読む。入る引数なし・出る値は Id（UPnP の ContentDirectory の標準のアクション。SCPD にある）
+    public var getSystemUpdateID: SOAPAction { SOAPAction(service: contentDirectory, name: "GetSystemUpdateID") }
 
     /// 記述が取れなかったときに、既定の control URL で作っておくサービス
     public var knownServices: [SOAPService] { [scheduledRecording, pvrControl, contentDirectory, connectionManager] }

@@ -106,6 +106,8 @@ public protocol MediaLibraryService: Sendable {
     func root(kind: MediaKind) async throws -> MediaListing
     /// フォルダー 1 つの中身
     func listing(folderID: String, kind: MediaKind) async throws -> MediaListing
+    /// 中身の版（共有フォルダーのファイルを足す・消す、録画が変わると進む。ContentDirectory の SystemUpdateID）
+    func updateID() async throws -> Int
 }
 
 /// 録画の再開位置の書き戻し（書き込み。自動で再試行しない）

@@ -80,9 +80,31 @@ public final class InfoModel {
     public private(set) var lastUpdated: Date?
 
     private let services: NasneServices
+    /// 集約ステータスの見回り（ほかの画面と共通。無ければ世代では読み直さない）
+    private let liveStatus: LiveStatusMonitor?
+    /// 今の値を読んだときの世代と状態の並び（読めなかったら nil）
+    @ObservationIgnored private var knownSignature: [Int?]?
 
-    public init(services: NasneServices) {
+    public init(services: NasneServices, liveStatus: LiveStatusMonitor? = nil) {
         self.services = services
+        self.liveStatus = liveStatus
+    }
+
+    /// 見回りが最後に読んだ、情報の画面に出すものの世代と状態の並び（これが変わったら `refreshIfChanged` を呼ぶ）
+    public var observedSignature: [Int?]? { liveStatus?.generations?.info }
+
+    /// 見回りで読み直す。世代と状態の並びが、前に読んだときと違うときだけ、読み込み中を挟まずに全部の区画を読み直す。
+    /// まだ読んでいない・読んでいる途中は何もしない
+    public func refreshIfChanged() async {
+        guard let signature = observedSignature, signature != knownSignature else { return }
+        await refreshQuietly()
+    }
+
+    /// 読み込み中を挟まずに全部の区画を読み直す（開いている間の `InfoRefresh.periodicInterval` ごとの読み直しにも使う）。
+    /// まだ読んでいない・読んでいる途中は何もしない
+    public func refreshQuietly() async {
+        guard lastUpdated != nil, !isLoading else { return }
+        await reload(quietly: true)
     }
 
     public var isLoading: Bool {
@@ -94,12 +116,16 @@ public final class InfoModel {
         device.value != nil || hdds.value != nil || status.value != nil || recNg.value != nil
     }
 
-    /// 全部の区画を読み込み直す（並べて読む。ひとつの失敗はほかに及ばない）
-    public func reload() async {
-        device = .loading
-        hdds = .loading
-        status = .loading
-        recNg = .loading
+    /// 全部の区画を読み込み直す（並べて読む。ひとつの失敗はほかに及ばない）。
+    /// `quietly` は見回りからの読み直し：読み込み中を挟まず、読めなかった区画は今の値を残す（誤りは出さない）
+    public func reload(quietly: Bool = false) async {
+        knownSignature = observedSignature
+        if !quietly {
+            device = .loading
+            hdds = .loading
+            status = .loading
+            recNg = .loading
+        }
         let services = services
         // 読めた区画から出す。「状態」は録画中の番組を探すために録画の一覧を全部読むので遅く、ほかの区画を待たせない
         // （前は並べて読んでも出すのは順に待ったので、「録画の失敗」が「状態」を待っていた。2026-11-21）
@@ -110,14 +136,20 @@ public final class InfoModel {
             group.addTask { .recNg(await Self.capture { try await services.deviceInfo.recNgList() }) }
             for await result in group {
                 switch result {
-                case .device(let value): device = value
-                case .hdds(let value): hdds = value
-                case .status(let value): status = value
-                case .recNg(let value): recNg = value
+                case .device(let value): device = Self.merge(device, value, quietly: quietly)
+                case .hdds(let value): hdds = Self.merge(hdds, value, quietly: quietly)
+                case .status(let value): status = Self.merge(status, value, quietly: quietly)
+                case .recNg(let value): recNg = Self.merge(recNg, value, quietly: quietly)
                 }
             }
         }
         lastUpdated = Date()
+    }
+
+    /// 読み直した区画の値。見回りからの読み直しで読めなかったときは、出している値を残す（同じ値なら差し替えない）
+    private static func merge<Value: Sendable & Equatable>(_ current: Loadable<Value>, _ new: Loadable<Value>, quietly: Bool) -> Loadable<Value> {
+        if quietly, case .failed = new, current.value != nil { return current }
+        return new == current ? current : new
     }
 
     /// 読み終えた区画 1 つ
@@ -169,4 +201,10 @@ public final class InfoModel {
         return StatusSummary(recordingTitles: recording, tuningStatus: live.tuningStatus,
                              messages: live.caMessages + live.emmMessages)
     }
+}
+
+/// 情報の画面の読み直し（体感の値）
+public enum InfoRefresh {
+    /// 開いている間に読み直す間。HDD の使用量は録画の最中に世代を進めずに増えていくので、世代の変化とは別にこの間で読み直す
+    public static let periodicInterval: TimeInterval = 60
 }

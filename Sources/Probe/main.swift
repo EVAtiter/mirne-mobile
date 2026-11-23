@@ -28,7 +28,7 @@ import ImageIO
 //                                [--seconds 30] [--deinterlace adaptive|bob|weave] [--mute]   （窓を開いて描く）
 //
 // --host の代わりに環境変数 MIRNE_NASNE_HOST でもよい。
-// nasne には読み取りしか送らない（PINVerify と EPGGet は POST だが、どちらも状態を変えない）。例外は delete-title・protect-title・resume-position の --send だけ。
+// nasne には読み取りしか送らない（PINVerify と EPGGet は POST だが、どちらも状態を変えない）。例外は delete-title・protect-title・resume-position・repeat-schedule の --send だけ。
 // 出力に機器の固有値（MAC アドレス・IP アドレス・HDD のシリアル・B-CAS のカード ID・UDN）、地域、
 // 局名、番組名、PIN、トークンを出さない。件数と形だけを出す。
 
@@ -49,6 +49,7 @@ let subcommands: [(name: String, summary: String)] = [
     ("scpd", "SOAP のサービスの説明（SCPD）を読み、アクションと引数の名前・型を出す（GET だけ）"),
     ("delete-title", "★書き込み：試しの録画を 1 件消し、応答と件数の変化を見る（--send が無ければ送らない。合意を取ってから）"),
     ("protect-title", "★書き込み：試しの録画の保護を 1 回切り替え、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
+    ("repeat-schedule", "★書き込み：試しの予約に繰り返しの値を入れる（変更か作り直し）。応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
     ("resume-position", "★書き込み：試しの録画の再開位置を 1 回書き、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
     ("p6", "1.1.0 の機能の下調べ：局のロゴ（地上・BS・CS）・Browse の順・BrowseMetadata・保存した res と今の res・チャプターを読み取りだけで測る"),
     ("extras", "pydtcpip が使う読み取りの口（\(ExtrasEndpoints.remoteAPIPort) の titleListGet・チャプター、"
@@ -183,6 +184,9 @@ func runInfo() async throws {
     say("チャンネル（地上）: \(channels.count) 件・TV \(television.count) 件・本 \(television.count - subchannels.count) 件・サブ \(subchannels.count) 件")
     let live = try await service.liveStatus()
     say("集約ステータス: \(live.sections.count) 項目・選局 \(live.tuningStatus.map(String.init) ?? "不明")・EIT_PF の中身 \(live.sections["EIT_PF"].map { $0.raw.values.count > 1 ? "あり" : "なし（generation だけ）" } ?? "項目なし")")
+    // 一覧ごとの世代（変わったことを見分ける数。値は機器の固有の値ではないので出す）
+    say("世代: " + ["tvTimerList", "recContentsList", "recNgList"]
+        .map { "\($0) \(live.sections[$0]?.generation.map(String.init) ?? "無い")" }.joined(separator: "・"))
     say("録画の失敗: \(try await service.recNgList().count) 件")
     let counts = try await service.titleCounts()
     say("録画の件数: \(counts.count) 件（上限 \(counts.max) 件）")
@@ -485,6 +489,7 @@ do {
     case "delete-title": try await DeleteTitleCommand.run()
     case "protect-title": try await ProtectTitleCommand.run()
     case "resume-position": try await ResumePositionCommand.run()
+    case "repeat-schedule": try await RepeatScheduleCommand.run()
     case "p6": try await Phase6Command.run()
     default: printUsage(); exit(64)
     }

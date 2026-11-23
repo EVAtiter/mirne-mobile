@@ -22,11 +22,22 @@ public final class SchedulesModel {
     private let service: any ScheduleService
     /// 局の一覧（ほかの画面と共通）
     private let catalog: ChannelCatalog
+    /// 集約ステータスの見回り（予約の一覧の世代。ほかの画面と共通）
+    private let liveStatus: LiveStatusMonitor
+    private let now: @Sendable () -> Date
+    /// 読み直すかの判断（前に一覧を読んだときの世代と時刻）
+    @ObservationIgnored private var tracker = ListRefreshTracker(fallbackInterval: SchedulesRefresh.fallbackInterval)
 
-    public init(schedules: any ScheduleService, channels: ChannelCatalog) {
+    public init(schedules: any ScheduleService, channels: ChannelCatalog, liveStatus: LiveStatusMonitor,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         service = schedules
         catalog = channels
+        self.liveStatus = liveStatus
+        self.now = now
     }
+
+    /// 見回りが最後に読んだ予約の一覧の世代（画面はこれが変わったら `refreshIfChanged` を呼ぶ）
+    public var observedGeneration: Int? { liveStatus.generations?.schedules }
 
     /// 開始の早い順の一覧（同じ開始なら局の serviceID、ID の順）
     public var sortedSchedules: [RecordSchedule] {
@@ -51,12 +62,50 @@ public final class SchedulesModel {
     public func reload() async {
         schedules = .loading
         async let names: Void = catalog.load()
+        // 世代は一覧より先に控える（読んでいる間に変わったら、次の見回りで世代の違いとして見つかる。
+        // 見回りの世代が少し古くても、一度余分に読み直すだけ）
+        let generation = observedGeneration
         do {
             schedules = .loaded(try await service.schedules())
+            noteListRead(generation: generation)
         } catch {
             schedules = .failed(ErrorText.present(error))
         }
         await names
+        dropMissingSelection()
+    }
+
+    /// 画面を開いている間の読み直し。見回り（`LiveStatusMonitor`）が読んだ予約の一覧の世代が、前に一覧を読んだときと違うときだけ一覧を読み直す。
+    /// nasne の予約のサービスは変わったことを知らせない（SCPD に通知する状態変数が無い）ので、公式のアプリやほかの端末の変更、
+    /// 録画の後に繰り返しの予約が次の回へ進んだことは、こうして見つける（公式の torne® mobile も同じ頼みを見回っている）。
+    /// 世代が読めないとき（見回りの頼みが失敗した・項目が無い）は、`SchedulesRefresh.fallbackInterval` ごとに一覧を読み直す。
+    /// まだ読んでいない・読み込みの途中・読み込めなかったときは何もしない（最初の読み込みと読み直しは `reload` が受け持つ）
+    public func refreshIfChanged() async {
+        guard case .loaded = schedules else { return }
+        let generation = observedGeneration
+        guard tracker.needsRefresh(observed: generation, now: now()) else { return }
+        await refreshQuietly(generation: generation)
+    }
+
+    /// 読み込み中の表示を出さずに一覧を読み直し、中身が変わったときだけ差し替える。読めなかったときは今の一覧を残す
+    /// （誤りは出さない。次の見回りか、更新で出す）
+    private func refreshQuietly(generation: Int?) async {
+        guard case .loaded(let current) = schedules else { return }
+        guard let latest = try? await service.schedules() else { return }
+        // 待っている間に更新などで状態が変わっていたら、そちらを正とする
+        guard case .loaded = schedules else { return }
+        if latest != current { schedules = .loaded(latest) }
+        noteListRead(generation: generation)
+        dropMissingSelection()
+    }
+
+    /// 一覧を読めたときの世代と時刻を覚える
+    private func noteListRead(generation: Int?) {
+        tracker.noteRead(generation: generation, at: now())
+    }
+
+    /// 選んでいた予約が一覧から無くなったら、選ぶのをやめる
+    private func dropMissingSelection() {
         if let selectedID, schedules.value?.contains(where: { $0.id == selectedID }) != true {
             self.selectedID = nil
         }
@@ -75,6 +124,12 @@ public final class SchedulesModel {
         return failure
     }
 
+}
+
+/// 予約の画面の読み直し（体感の値。画面で見て決める）
+public enum SchedulesRefresh {
+    /// 世代が読めないときに一覧そのものを読み直す間（予約 100 件で 50 件ずつ 2 回の読み取りになるので、世代の見回りより長くする）
+    public static let fallbackInterval: TimeInterval = 15
 }
 
 /// 予約の時期（今の時刻との前後）

@@ -75,6 +75,11 @@ public struct DLNAMediaLibraryService: Sendable {
     /// 木の在りか（種類ごとのフォルダーの木の根・縮小版の名前。機器の表）
     private var dlna: DLNATable { catalog.profile.dlna }
 
+    /// 中身の版（ContentDirectory の SystemUpdateID）
+    public func updateID() async throws -> Int {
+        try await catalog.systemUpdateID()
+    }
+
     /// 種類の木の根の中身（共有フォルダー。share1 など）
     public func root(kind: MediaKind) async throws -> MediaListing {
         try await listing(folderID: dlna.mediaFolderContainers[kind] ?? "", kind: kind)

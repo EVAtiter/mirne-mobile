@@ -1,11 +1,11 @@
 import SwiftUI
 
-// 各画面の帯のボタンの見た目（iOS 版）：「ライブ」「設定」「更新」「現在」と番組表の日付を、iPhone のナビゲーションの帯の
+// 各画面の帯のボタンの見た目（iOS 版）：「ライブ」「設定」「現在」「新規予約」と番組表の日付・録画の絞り込みを、iPhone のナビゲーションの帯の
 // ボタンと同じ形（ガラスの丸い板に黒い絵・文字）にする（2026-11-23。Mac の枠付きのボタンとも近い見た目になる）。
 // ガラスは iOS 26 から。それより前の版は枠付き（灰色の地）にする
 
 extension View {
-    /// 帯の 1 つのボタン（「更新」「現在」）
+    /// 帯の 1 つのボタン（「現在」など）
     @ViewBuilder
     func barButtonChrome() -> some View {
         if #available(iOS 26.0, *) {
@@ -29,7 +29,17 @@ extension View {
         }
     }
 
-    /// 帯のメニューの選択（番組表の日付）
+    /// 帯の切り替えのボタン（録画の「番組名でまとめる」）：入っている間は色の付いた板にする
+    @ViewBuilder
+    func barToggleChrome(isOn: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            if isOn { buttonStyle(.glassProminent) } else { buttonStyle(.glass).foregroundStyle(.primary) }
+        } else {
+            if isOn { buttonStyle(.borderedProminent) } else { buttonStyle(.bordered).tint(.primary) }
+        }
+    }
+
+    /// 帯のメニューの選択（番組表の日付・録画の絞り込みと並べ替え）
     @ViewBuilder
     func barMenuChrome() -> some View {
         if #available(iOS 26.0, *) {

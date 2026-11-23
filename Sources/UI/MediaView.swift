@@ -8,6 +8,7 @@ struct MediaView: View {
     /// 再生の窓（画面）を開く。無ければ動画・音楽を押しても再生しない
     let openViewer: (() -> Void)?
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.scenePhase) private var scenePhase
     /// たどった道（空なら種類を選ぶ画面）
     @State private var path: [MediaLocation] = []
     /// 開く写真（そのフォルダーの写真と、選んだ 1 枚）
@@ -15,8 +16,7 @@ struct MediaView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScreenActionBar(refreshHelp: "メディアを更新する（⌘R）", isRefreshing: model.isLoading,
-                            refresh: { Task { await model.reload() } }) {
+            ScreenActionBar(hasLeading: !path.isEmpty) {
                 if !path.isEmpty {
                     Button { goBack() } label: { Label("戻る", systemImage: MediaSymbol.back) }
                         .help("1 つ上へ戻る")
@@ -31,9 +31,16 @@ struct MediaView: View {
             }
         }
         .navigationTitle("メディア")
+        // 開いていて前面にある間、中身の版（SystemUpdateID）を見回り、変わったら今の場所を読み直す
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: MediaRefresh.checkInterval)
+                await model.refreshIfChanged()
+            }
+        }
         .mediaPresentation($album, windowID: MediaPhotoWindowID.main) { MediaPhotoView(album: $0) }
         .onChange(of: environment.mainCommands.pending, initial: true) {
-            if environment.mainCommands.consume(.refresh) { Task { await model.reload() } }
         }
     }
 

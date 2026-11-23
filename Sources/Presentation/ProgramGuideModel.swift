@@ -132,11 +132,21 @@ public final class ProgramGuideModel {
     /// 取り直す。版数表が前と同じで、番組表に番組があれば EPGGet を送らない。
     /// 取り直している間にもう一度呼ばれたら、同じ取り直しが終わるのを待つ（二重に送らない）
     public func refresh() async {
+        await refresh(quietly: false)
+    }
+
+    /// 開いている間の見回りからの取り直し。版数表を読んでいる・取り直している間も状態を変えず（知らせの帯に「更新しています」を出さない）、
+    /// 取り直せなかったときは前の状態を残す（誤りを出さない。次の見回りでもう一度）
+    public func refreshQuietly() async {
+        await refresh(quietly: true)
+    }
+
+    private func refresh(quietly: Bool) async {
         if let running {
             await running.value
             return
         }
-        let task = Task { await perform() }
+        let task = Task { await perform(quietly: quietly) }
         running = task
         await task.value
         running = nil
@@ -154,19 +164,20 @@ public final class ProgramGuideModel {
         await finish()
     }
 
-    private func perform() async {
+    private func perform(quietly: Bool) async {
         let started = ContinuousClock.now
-        state = .checking
+        let previous = state
+        if !quietly { state = .checking }
         do {
             let table = try await service.versionTable()
             let digest = Self.digest(table)
             let stored = store.storedServices().count
             if digest == versions.load(), stored > 0 {
-                state = .updated(at: now(), changed: false)
+                if !quietly { state = .updated(at: now(), changed: false) }
                 Self.logger.info("番組表: 版数表が前と同じなので取り直さない（\(table.count, privacy: .public) バイト・保存したサービス \(stored, privacy: .public) 件）")
                 return
             }
-            state = .fetching
+            if !quietly { state = .fetching }
             let result = try await service.fetch(versionTable: table)
             store.save(result.sections, receivedAt: now())
             await store.flushed()
@@ -179,7 +190,7 @@ public final class ProgramGuideModel {
             state = .updated(at: now(), changed: true)
             Self.logger.info("番組表: 取り直した（サービス \(result.serviceCount, privacy: .public) 件・セクション \(result.sections.count, privacy: .public) 件・応答 \(result.responseBytes, privacy: .public) バイト・\(started.elapsedMilliseconds, privacy: .public) ms）")
         } catch {
-            state = .failed(ErrorText.present(error))
+            state = quietly ? previous : .failed(ErrorText.present(error))
             Self.logger.error("番組表: 取り直せなかった（\(NasneDiagnostics.summary(error), privacy: .public)）")
         }
     }
@@ -192,4 +203,10 @@ public final class ProgramGuideModel {
     static func digest(_ table: Data) -> String {
         "r\(versionTableReadingRevision):" + SHA256.hash(data: table).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+/// 番組表の画面を開いている間の見回り（体感の値）
+public enum ProgramGuideRefreshTiming {
+    /// 版数表を読む間（版数表は約 4 KB。前と同じなら EPGGet を送らない）
+    public static let checkInterval: Duration = .seconds(60)
 }

@@ -144,6 +144,23 @@ public struct LiveStatus: Sendable {
         self.sections = sections
     }
 
+    /// 予約の一覧の世代（`tvTimerList.generation`）。予約を作る・変える・消すたびに 1 つ進む（2026-11-24・Buffalo 製で、作って消すと 2 つ進み、
+    /// 録画の一覧・予約の失敗の一覧の世代は変わらなかった）。公式の torne® mobile は予約の画面でこの頼みを 2 秒ごとに読んでいる。無ければ nil
+    public var scheduleListGeneration: Int? { sections["tvTimerList"]?.generation }
+
+    /// 録画の一覧の世代（`recContentsList.generation`）。録画の保護を切り替えると進む（2026-11-24・Buffalo 製で、切り替えて戻すと
+    /// 186 → 191。1 回の変化で 1 つとは限らない）。共有フォルダーのファイルを足す・消すでは変わらなかった。無ければ nil
+    public var recordingListGeneration: Int? { sections["recContentsList"]?.generation }
+
+    /// 予約の失敗の一覧の世代（`recNgList.generation`）。無ければ nil
+    public var recNgListGeneration: Int? { sections["recNgList"]?.generation }
+    /// 外付け HDD の状態の世代（`externalHDDStatus.generation`。つないだ・外したで進むと見ている〔測っていない〕）。無ければ nil
+    public var externalHDDGeneration: Int? { sections["externalHDDStatus"]?.generation }
+    /// CA のお知らせの世代（`CAMsg.generation`）。無ければ nil
+    public var caMessageGeneration: Int? { sections["CAMsg"]?.generation }
+    /// EMM のお知らせの世代（`EMMMsg.generation`）。無ければ nil
+    public var emmMessageGeneration: Int? { sections["EMMMsg"]?.generation }
+
     /// チューナーが選局中か（`tuningStatus.status`）。値の意味は未確定なので、0 以外を選局中と読む（推測）
     public var tuningStatus: Int? { sections["tuningStatus"]?.raw.int("status") }
 

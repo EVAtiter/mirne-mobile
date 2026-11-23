@@ -715,6 +715,14 @@ public struct RecordingCatalogService: Sendable {
         }
     }
 
+    /// ContentDirectory の中身の版（`SystemUpdateID`）
+    public func systemUpdateID() async throws -> Int {
+        let action = actions.getSystemUpdateID
+        let response = try await call(action, [])
+        guard let id = response.systemUpdateID else { throw NasneError.parse("soap:\(action.name)", "Id が無い") }
+        return id
+    }
+
     /// ContentDirectory の Browse（直下の子の container と item を文書の順に）
     public func browseEntries(_ objectID: String) async throws -> [DIDLEntry] {
         try await pagedList(

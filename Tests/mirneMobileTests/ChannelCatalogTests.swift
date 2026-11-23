@@ -69,7 +69,7 @@ struct ChannelCatalogTests {
         let device = CountingChannels(first)
         let catalog = ChannelCatalog(deviceInfo: device)
         let lineup = GuideLineupModel(channels: catalog)
-        let schedules = SchedulesModel(schedules: NoSchedules(), channels: catalog)
+        let schedules = SchedulesModel(schedules: NoSchedules(), channels: catalog, liveStatus: LiveStatusMonitor(deviceInfo: device))
         // 続けて読んでも、読んでいる途中のものを待ち、読めた後は読み直さない
         async let a: Void = lineup.load()
         async let b: Void = schedules.reload()
@@ -105,7 +105,7 @@ struct ChannelCatalogTests {
         let device = CountingChannels(first)
         device.next(fails: true)
         let catalog = ChannelCatalog(deviceInfo: device)
-        let schedules = SchedulesModel(schedules: NoSchedules(), channels: catalog)
+        let schedules = SchedulesModel(schedules: NoSchedules(), channels: catalog, liveStatus: LiveStatusMonitor(deviceInfo: device))
         await catalog.load()
         #expect(catalog.channels.error != nil)
         #expect(schedules.channelName(ScheduleChannel(broadcastingType: 2, channelType: 2, serviceID: 0x4010)) == "サービス 0x4010")

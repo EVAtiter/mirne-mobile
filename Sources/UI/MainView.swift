@@ -24,6 +24,9 @@ struct MainView: View {
     @State private var lineup: GuideLineupModel
     @State private var schedules: SchedulesModel
     @State private var media: MediaModel
+    /// 集約ステータスの見回り（一覧ごとの世代。各画面のモデルが見る）
+    @State private var liveStatus: LiveStatusMonitor
+    @Environment(\.scenePhase) private var scenePhase
     @State private var credentials = CredentialsModel.live()
     /// 局のロゴの絵（録画・予約の一覧の行の頭に出す。ロゴが変わったときだけ作り直す）
     @State private var logoImages = ChannelLogoImages()
@@ -34,9 +37,12 @@ struct MainView: View {
          openViewer: (() -> Void)?) {
         self.services = services
         self.openViewer = openViewer
-        _info = State(initialValue: InfoModel(services: services))
-        _recordings = State(initialValue: RecordingsModel(services: services, channels: channels, library: library, viewing: viewing))
-        _schedules = State(initialValue: SchedulesModel(schedules: services.schedules, channels: channels))
+        let liveStatus = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        _liveStatus = State(initialValue: liveStatus)
+        _info = State(initialValue: InfoModel(services: services, liveStatus: liveStatus))
+        _recordings = State(initialValue: RecordingsModel(services: services, channels: channels, library: library, viewing: viewing,
+                                                          liveStatus: liveStatus))
+        _schedules = State(initialValue: SchedulesModel(schedules: services.schedules, channels: channels, liveStatus: liveStatus))
         _media = State(initialValue: MediaModel(services: services))
         _lineup = State(initialValue: GuideLineupModel(
             channels: channels, logos: logos,
@@ -56,6 +62,27 @@ struct MainView: View {
             .onChange(of: stateNotices) { environment.notices.forgetDismissed(notIn: stateNotices) }
             // 録画一覧は起動したときから読む（録画の画面を開くのを待たない。2026-11-21）
             .task { if case .idle = recordings.titles { await recordings.reload() } }
+            // 集約ステータスの見回りは、アプリが前面にある間だけ（前面でなくなると取り消され、戻るとすぐ読む）
+            .task(id: scenePhase) { if scenePhase == .active { await liveStatus.run() } }
+            // 録画一覧は、どの画面を開いていても、録画の一覧の世代が変わったら読み直す（ほかの画面の再生・番組表でも使うため）
+            .onChange(of: recordings.observedGeneration) { Task { await recordings.refreshIfChanged() } }
+            // 予約の一覧も、一度読んだら（予約の画面か番組表を開いたら）どの画面でも世代の変化で読み直す（番組表の予約済みの印のため）
+            .onChange(of: schedules.observedGeneration) { Task { await schedules.refreshIfChanged() } }
+            // 世代が読めないときの読み直し（世代が読めていれば refreshIfChanged は何もしない）
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(RecordingsRefresh.fallbackInterval))
+                    await recordings.refreshIfChanged()
+                }
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(SchedulesRefresh.fallbackInterval))
+                    await schedules.refreshIfChanged()
+                }
+            }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .onChange(of: showsSubchannels) { lineup.showsSubchannels = showsSubchannels }
             .environment(logoImages)
@@ -93,7 +120,26 @@ struct MainView: View {
         .environment(\.mainTitleBarHidden, !layout.showsTitleBar)
         // 「ライブ」「設定」は各画面の帯の右端に出す（iOS で上の帯を出すときは、上の帯の右端）
         .environment(\.mainBarAccessories, layout.showsAccessoriesInTitleBar ? nil : barAccessories(layout))
+        .environment(\.mainTitleBarHasActions, layout.showsAccessoriesInTitleBar)
         .toolbar {
+            // 番組表の「現在」は上の帯の左（iPhone の縦向き・iPad の狭い分割。2026-11-24）
+            if layout.showsAccessoriesInTitleBar && selection == .guide {
+                ToolbarItem(placement: .navigation) {
+                    Button("現在") { environment.mainCommands.request(.guideNow) }
+                        .lineLimit(1)
+                        .fixedSize()
+                        .help("今の時刻へ送る")
+                }
+            }
+            // 予約の「新規予約」は上の帯の左（iPhone の縦向き・iPad の狭い分割。各画面の帯の左端では寄りすぎて見えた。2026-11-24）
+            if layout.showsAccessoriesInTitleBar && selection == .schedules {
+                ToolbarItem(placement: .navigation) {
+                    Button { environment.mainCommands.request(.newSchedule) } label: { Label("新規予約", systemImage: "plus") }
+                        .labelStyle(.iconOnly)
+                        .disabled(schedules.channels.isEmpty)
+                        .help("時刻を指定して予約する")
+                }
+            }
             if layout.showsAccessoriesInTitleBar {
                 // ボタンの丸い板は上の帯が付ける（各画面の帯の部品は自分で板を付けるので使わない）
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -178,7 +224,7 @@ struct MainView: View {
         var notices: [MainNotice] = []
         if let connection = MainNotices.connection(environment.connection) { notices.append(connection) }
         notices += MainNotices.recordings(isLoading: recordings.titles.isLoading, loadError: recordings.titles.error,
-                                          isRefreshing: recordings.isRefreshing, refreshError: recordings.refreshError,
+                                          isRefreshing: recordings.showsRefreshProgress, refreshError: recordings.refreshError,
                                           isShowingSavedList: recordings.isShowingSavedList, isDeleting: recordings.deletingID != nil,
                                           isProtecting: recordings.protectingID != nil)
         if let notice = MainNotices.schedules(isLoading: schedules.schedules.isLoading, loadError: schedules.schedules.error) {

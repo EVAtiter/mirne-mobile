@@ -10,7 +10,6 @@ enum MainRequest: Equatable {
     case deleteSchedule
     case searchRecordings
     case guideNow
-    case refresh
     /// ライブで見る（前に見た局。iPad のメニューから。macOS のメニューは視聴ウィンドウを直に開く）
     case watchLive
 }

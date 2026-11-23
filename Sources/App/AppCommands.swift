@@ -257,8 +257,6 @@ private struct ViewMenuItems: View {
             .disabled(!registered)
         }
         Divider()
-        MainCommandButton(environment: environment, title: "更新", request: .refresh, section: nil)
-            .keyboardShortcut("r", modifiers: .command)
         MainCommandButton(environment: environment, title: "番組表の「現在」へ", request: .guideNow, section: .guide)
         Divider()
         // 録画一覧の並べ方（ツールバーの帯の操作をキーボードからも）

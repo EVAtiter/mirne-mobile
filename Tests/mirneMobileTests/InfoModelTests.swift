@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 // 情報の画面（2026-11-19 に「ホーム」から改名）。
@@ -29,6 +30,30 @@ private func services(_ http: MockHTTP) throws -> NasneServices {
 @MainActor
 @Suite("情報の画面")
 struct InfoModelTests {
+    @Test("見回り：世代と状態の並びが同じなら読まず、違えば読み込み中を挟まず読み直す。読めなかった区画は今の値を残す")
+    func refreshWhenSignatureChanges() async throws {
+        let http = fixtureHTTP()
+        let recNg = Mutex(80)
+        http.respond("/status/liveStreamStatusListGet") { _ in
+            MockHTTP.Reply(status: 200, body: Data(#"{"errorcode":0,"recNgList":{"generation":\#(recNg.withLock { $0 })}}"#.utf8))
+        }
+        let services = try services(http)
+        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        let model = InfoModel(services: services, liveStatus: monitor)
+        func count() -> Int { http.sentRequests.filter { $0.url?.path == "/status/recNgListGet" }.count }
+        await monitor.poll()
+        await model.reload()
+        let loaded = try #require(model.recNg.value)
+        await model.refreshIfChanged()
+        #expect(count() == 1)
+        recNg.withLock { $0 = 81 }
+        await monitor.poll()
+        http.failNext("/status/recNgListGet", count: 1)
+        await model.refreshIfChanged()
+        #expect(count() > 1)   // 読み直しを頼んだ（届かないときの頼み直しの回数は数えない）
+        #expect(model.recNg.value == loaded)   // 読めなかったので残す
+    }
+
     @Test("4 つの区画を読み込む（版は公式の表記・地域は表に無ければ数のまま・録画中は recordingFlag から）")
     func loadsAllSections() async throws {
         let model = InfoModel(services: try services(fixtureHTTP()))

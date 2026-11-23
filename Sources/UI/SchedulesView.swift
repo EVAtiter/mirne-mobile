@@ -8,6 +8,8 @@ import SwiftUI
 struct SchedulesView: View {
     @State var model: SchedulesModel
     @Environment(AppEnvironment.self) private var environment
+    /// 上の帯に画面の操作も置いているか（そのときは「新規予約」を上の帯に出す）
+    @Environment(\.mainTitleBarHasActions) private var titleBarHasActions
     /// 開いているシート（作成・画質の変更。閉じていれば nil）
     @State private var sheet: ScheduleSheet?
     /// 消すかを確かめている予約
@@ -26,12 +28,12 @@ struct SchedulesView: View {
     }
 
     private var screen: some View {
-        // 上の帯（番組表と同じ位置）に「＋ 新規予約」と「更新」。帯の下の横線で、左右の仕切りの縦線を止める
+        // 上の帯（番組表と同じ位置）に「＋ 新規予約」。帯の下の横線で、左右の仕切りの縦線を止める
         // （仕切りの縦線がツールバーまで突き抜けていた。2026-11-20）
         VStack(spacing: 0) {
-            ScreenActionBar(refreshHelp: "予約の一覧を更新する（⌘R）", isRefreshing: model.schedules == .loading,
-                            refresh: { Task { await model.reload() } }) {
-                newScheduleButton
+            // 上の帯に画面の操作を置くとき（iPhone の縦向き・iPad の狭い分割）は「新規予約」を上の帯の左に出すので、ここには置かない
+            ScreenActionBar(hasLeading: !titleBarHasActions) {
+                if !titleBarHasActions { newScheduleButton }
             }
             // 一覧は窓の幅いっぱい。選んだ予約の詳細は一覧に重ねるカードに出す（2026-11-22。前は右に区切った詳細の欄。録画の画面と同じ）
             list
@@ -44,8 +46,10 @@ struct SchedulesView: View {
         .selectionCardSheet(isPresented: showsCardSheet, close: { model.selectedID = nil }, onDismiss: runAfterCardSheet) {
             deletionAlert(card, isPresented: pendingDeletion != nil)
         }
-        .task { if model.schedules == .idle { await model.reload() } }
-        // メニュー：新しい予約…（⌘N）・予約を削除…（⌘⌫）・更新（⌘R）
+        // 開くたびに読み直す（古い一覧のまま消すと、もう無い ID に送って何も消えない）。
+        // 開いている間の読み直しは MainView が受け持つ（予約の一覧の世代が変わったら。番組表の予約済みの印も同じモデルを使う）
+        .task { await model.reload() }
+        // メニュー：新しい予約…（⌘N）・予約を削除…（⌘⌫）
         .onChange(of: environment.mainCommands.pending, initial: true) {
             let center = environment.mainCommands
             if center.consume(.newSchedule), sheet == nil {
@@ -58,7 +62,6 @@ struct SchedulesView: View {
                 }
             }
             if center.consume(.deleteSchedule), let schedule = model.selectedSchedule { pendingDeletion = schedule }
-            if center.consume(.refresh) { Task { await model.reload() } }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
@@ -118,6 +121,8 @@ struct SchedulesView: View {
         } label: { Label("新規予約", systemImage: "plus") }
             // 狭い幅では絵だけ（2026-11-23）
             .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+            // iOS はほかの帯のボタンと同じ丸い板（OS ごと。2026-11-24）
+            .barButtonChrome()
             .disabled(model.channels.isEmpty)
             .help(model.channels.isEmpty ? "局の一覧を読み込めていないので、予約を作れません" : "時刻を指定して予約する")
     }

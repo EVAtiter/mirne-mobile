@@ -6,7 +6,7 @@ import SwiftUI
 // - 局は mirne の `ChannelList.Entry` ではなく nasne のチャンネル一覧（`Channel`）。並べる局は `GuideLineupModel`
 // - データの出所は mirne の `ViewerModel` ではなく `ProgramGuideModel`（nasne の EPGGet → EPGStore）。読み直しの合図はその書き込みの回数
 // - 時計は Mac の時刻（mirne は放送の時刻に合わせる）。番組を押しても選局はせず、詳細の吹き出しをすぐ出す
-// - 上の操作の「視聴した局の分だけ集まります」の注記を、取り直しの状態と「更新」に替えた（nasne は全局をまとめて返す）
+// - 上の操作の「視聴した局の分だけ集まります」の注記を外した（nasne は全局をまとめて返す。取り直しは開いている間の版数表の見回りで行う）
 // - 別ウィンドウ（`WindowID.guide`・`GuideWindowController`）とシートは、まだ写していない
 
 /// 番組表の画面の寸法。
@@ -205,6 +205,7 @@ struct GuideView: View {
     @State private var sheet: GuideSheet?
     /// 知らせの帯（「予約しました」を出す）
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.scenePhase) private var scenePhase
     /// 予約済みの印。予約の一覧を読み直している間・読めなかったときは前の印のまま（読み直すたびに消えて点滅しないように）
     @State private var scheduleMarks = ScheduleMarks.none
 
@@ -232,17 +233,15 @@ struct GuideView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GuideToolbar(days: table?.days ?? [], scroll: scroll, refreshState: guide.state,
-                         refresh: {
-                             Task { await guide.refresh() }
-                             Task { await lineup.loadLogos(reload: true) }
-                         },
+            GuideToolbar(days: table?.days ?? [], scroll: scroll,
                          moveDay: moveDay(by:), showDay: showDay(_:), showNow: showNow, dismiss: dismiss)
             Divider()
             if lineup.lineup.isEmpty {
                 lineupPlaceholder
             } else {
                 grid
+                    // ほかのアプリから戻るクリックで、番組のシートを出さない（macOS。窓を前面にするだけ）
+                    .overlay { ActivationClickBlocker() }
             }
         }
         // 番組表の書き込み・局の一覧の変化を見て読み直す。見るのは下の小さな view だけにし、この画面全体は描き直さない
@@ -260,6 +259,14 @@ struct GuideView: View {
             async let logos: Void = lineup.loadLogos()
             await guide.refresh()
             await logos
+        }
+        // 開いていて前面にある間は、版数表を見回り、変わっていたら取り直す（同じなら EPGGet を送らない）
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: ProgramGuideRefreshTiming.checkInterval)
+                await guide.refreshQuietly()
+            }
         }
         // ライブで見られる局を知る（Browse だけ。チューナーは動かない）
         .task { await live?.model.load() }
@@ -296,14 +303,10 @@ struct GuideView: View {
             }
         }
         .onChange(of: scrollRequest) { scrollToNow() }
-        // メニュー：番組表の「現在」へ・更新（⌘R）
+        // メニュー：番組表の「現在」へ
         .onChange(of: commandCenter?.pending, initial: true) {
             guard let center = commandCenter else { return }
             if center.consume(.guideNow) { showNow() }
-            if center.consume(.refresh) {
-                Task { await guide.refresh() }
-                Task { await lineup.loadLogos(reload: true) }
-            }
         }
     }
 
@@ -610,20 +613,20 @@ private final class GuideLoadState {
     #endif
 }
 
-/// 上の操作（日付・「現在」・取り直し・閉じる）。送った位置の日付を出すので、送った量のうち「何日目か」だけを見る
+/// 上の操作（日付・「現在」・閉じる）。送った位置の日付を出すので、送った量のうち「何日目か」だけを見る
 private struct GuideToolbar: View {
     /// 狭い幅の形（日付の曜日の括弧を省く）
     @Environment(\.usesCompactLayout) private var compact
     let days: [GuideDay]
     let scroll: GuideScrollState
-    let refreshState: ProgramGuideRefreshState
-    let refresh: () -> Void
     let moveDay: (Int) -> Void
     let showDay: (Int) -> Void
     let showNow: () -> Void
     let dismiss: (() -> Void)?
     /// 帯の中央に出す画面の名前（iPhone の横向き。入らない機種では出さない）
     @Environment(\.mainBarTitle) private var title
+    /// 上の帯に画面の操作も置いているか（そのときは「現在」を上の帯の左に出す）
+    @Environment(\.mainTitleBarHasActions) private var titleBarHasActions
 
     var body: some View {
         Group {
@@ -632,7 +635,7 @@ private struct GuideToolbar: View {
                     CenteredRow(spacing: ScreenActionBarLayout.spacing) {
                         HStack(spacing: ScreenActionBarLayout.spacing) { dayControls(showsSteppers: true) }
                         MainBarTitle(text: title)
-                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls(showsStatus: true) }
+                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls }
                     }
                     rows
                 }
@@ -646,27 +649,35 @@ private struct GuideToolbar: View {
         .frame(minWidth: 0, maxWidth: .infinity)
     }
 
-    /// 名前を出さない帯。入らなければ更新の時刻を省き、それでも入らなければ前後の日のボタンも省く
+    /// 名前を出さない帯。入らなければ前後の日のボタンを省く
     /// （ほかの部品を押しつぶさない。日は日付のメニューから選べる。iPad の窓をいちばん狭くしたとき。2026-11-23）
     private var rows: some View {
         ViewThatFits(in: .horizontal) {
-            row(showsStatus: true, showsSteppers: true)
-            row(showsStatus: false, showsSteppers: true)
-            row(showsStatus: false, showsSteppers: false)
+            row(showsSteppers: true)
+            row(showsSteppers: false)
         }
     }
 
-    private func row(showsStatus: Bool, showsSteppers: Bool) -> some View {
+    private func row(showsSteppers: Bool) -> some View {
         HStack(spacing: ScreenActionBarLayout.spacing) {
             dayControls(showsSteppers: showsSteppers)
             Spacer()
-            trailingControls(showsStatus: showsStatus)
+            trailingControls
         }
     }
 
-    /// 左の日付の操作（前後の日・日付・「現在」）
+    /// 左の日付の操作（「現在」・前後の日・日付）。「現在」はいちばん左（2026-11-24）。上の帯に画面の操作も置くとき
+    /// （iPhone の縦向き・iPad の狭い分割）は、「現在」を上の帯の左に出すので、ここには置かない
     @ViewBuilder private func dayControls(showsSteppers: Bool) -> some View {
         let visible = min(scroll.visibleDay, max(days.count - 1, 0))
+        // 今の時刻へ送る（2026-11-20 に「今」から改めた）
+        if !titleBarHasActions {
+            Button("現在", action: showNow)
+                // 幅が足りなくても文字を折り返さない（帯の形を選ぶのは `rows`）
+                .lineLimit(1)
+                .fixedSize()
+                .barButtonChrome()
+        }
         // 前後の日（OS ごとの部品）
         if showsSteppers {
             GuideDaySteppers(canGoBack: !days.isEmpty && visible > 0,
@@ -683,32 +694,15 @@ private struct GuideToolbar: View {
         .fixedSize()
         // iOS はナビゲーションの帯のボタンと同じ形（OS ごと）
         .barMenuChrome()
-        // 今の時刻へ送る（2026-11-20 に「今」から改めた）
-        Button("現在", action: showNow)
-            // 幅が足りなくても文字を折り返さない（帯の形を選ぶのは `rows`）
-            .lineLimit(1)
-            .fixedSize()
-            .barButtonChrome()
     }
 
-    /// 右の操作（更新の時刻・「更新」・「ライブ」「設定」・閉じる）
-    @ViewBuilder private func trailingControls(showsStatus: Bool) -> some View {
-        if showsStatus { refreshStatus }
-        ScreenRefreshButton(help: "番組表を更新する（⌘R。nasne の番組表が変わっていなければ読み込まない）",
-                            isRefreshing: refreshState.isRunning, action: refresh)
+    /// 右の操作（「ライブ」「設定」・閉じる。「更新」と更新の時刻は 2026-11-24 に外した。開いている間は版数表を見回って取り直す）
+    @ViewBuilder private var trailingControls: some View {
         // 「ライブ」「設定」（上の帯の右端に置くとき〔iPhone の縦向き・iPad の狭い分割〕は出さない）
         MainBarAccessoryButtons()
         if let dismiss {
             Button("閉じる", action: dismiss)
                 .keyboardShortcut(.cancelAction)
-        }
-    }
-
-    /// 最後に更新した時刻（更新している・更新できなかったことは知らせの帯に出す）
-    @ViewBuilder private var refreshStatus: some View {
-        if case .updated(let date, _) = refreshState {
-            // 帯のボタンの文字と同じ大きさ（録画の件数と取得日時と同じ部品。2026-11-21）
-            BarStatusText(text: "\(ProgramGuide.receivedLabel(date)) に更新")
         }
     }
 }
