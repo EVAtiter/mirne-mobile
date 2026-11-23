@@ -22,12 +22,16 @@ enum GuideLayout {
     static var hourHeight: CGFloat { 60 * pointsPerMinute }
     /// 1 日（朝 4 時から翌朝 4 時）の高さ
     static var dayHeight: CGFloat { 24 * hourHeight }
-    /// 局の列の幅（倍率を掛ける）
-    static var columnWidth: CGFloat { (baseColumnWidth * scale).rounded() }
+    /// 狭い幅（iPhone の縦向きなど）のときの局の列の幅。主画面が番組表を作る前に書く（`apply`）。nil なら広い幅
+    nonisolated(unsafe) static var compactColumnWidth: CGFloat?
+    /// 局の列の幅（倍率を掛ける。狭い幅では画面に決まった数の局が収まる幅）
+    static var columnWidth: CGFloat { compactColumnWidth ?? (baseColumnWidth * scale).rounded() }
     private static let baseColumnWidth: CGFloat = 168
-    /// 左の時刻の列の幅（倍率を掛ける）
-    static var rulerWidth: CGFloat { (baseRulerWidth * scale).rounded() }
+    /// 左の時刻の列の幅（倍率を掛ける。狭い幅では詰める）
+    static var rulerWidth: CGFloat { ((compactColumnWidth == nil ? baseRulerWidth : baseCompactRulerWidth) * scale).rounded() }
     private static let baseRulerWidth: CGFloat = 32
+    /// 狭い幅の時刻の列の幅（2026-11-23。時と日付〔縮めて入れる〕が入る幅。体感の値）
+    private static let baseCompactRulerWidth: CGFloat = 22
     /// 表の右端の余白（スクロールバーの幅）。重ねて出すスクロールバーが右端の局の欄（局名の欄の視聴のボタン）に重なって押しにくかったので、
     /// 右端まで送ったときに最後の局がスクロールバーの左に来るよう、その幅だけ余らせる（mirne mobile で足した。2026-11-20 実機）。
     /// 「スクロールバーを常に表示」（`.legacy`）では、スクロールバーが表に重ならず自分の幅を取るので余らせない
@@ -56,6 +60,42 @@ enum GuideLayout {
     static let overscanRows = 1
     /// 送った量がまだ分からないうちに作る行の数（開いた直後。すぐに見えている行へ置き換わる）
     static let initialRows = 8
+}
+
+/// 狭い幅の番組表（iPhone の縦向きなど）
+enum GuideCompactLayout {
+    /// 画面の幅に収める局の数（2026-11-23。3 局は列が狭すぎるので 2 局。横向きなど広いときは広い幅の列の幅のまま）
+    static let visibleColumns: CGFloat = 2
+}
+
+/// 狭い幅の帯の日付の表記
+enum GuideDayText {
+    /// 「11/4 水」（「11/4(水)」の括弧を省いて空白でつなぐ。帯の幅を稼ぐため。2026-11-23）
+    static func compact(_ day: GuideDay) -> String {
+        ProgramGuide.dayLabel(day).replacingOccurrences(of: "(", with: " ").replacingOccurrences(of: ")", with: "")
+    }
+}
+
+/// 番組表の寸法の組（変わったら番組表を作り直す鍵）
+struct GuideSizing: Hashable {
+    let scale: CGFloat
+    let compactColumnWidth: CGFloat?
+}
+
+extension GuideLayout {
+    /// 番組表の寸法を書く（主画面が番組表を作る前に。書くのは主スレッドだけ）。
+    /// `compactWidth` は狭い幅のときの画面の幅（広い幅では nil）。狭い幅では、時刻の列を詰め、局の列を画面に決まった数だけ収まる幅にする
+    static func apply(textScale: CGFloat, compactWidth: CGFloat?) -> GuideSizing {
+        if scale != textScale { scale = textScale }
+        var column: CGFloat?
+        if let compactWidth {
+            let ruler = (baseCompactRulerWidth * textScale).rounded()
+            let fitted = ((compactWidth - ruler) / GuideCompactLayout.visibleColumns).rounded(.down)
+            column = min((baseColumnWidth * textScale).rounded(), fitted)
+        }
+        if compactColumnWidth != column { compactColumnWidth = column }
+        return GuideSizing(scale: textScale, compactColumnWidth: column)
+    }
 }
 
 /// 番組表の調べ（数と位置だけ。番組名は書かない）
@@ -180,6 +220,8 @@ struct GuideView: View {
     @State private var position = ScrollPosition(point: .zero)
     /// 局名の行の高さ（左上の角を同じ高さで塗り、時刻の列をその下から出す）
     @State private var headerHeight: CGFloat = 0
+    /// 狭い幅の形（局名の欄の取得の時刻を省く）
+    @Environment(\.usesCompactLayout) private var compact
     /// 送った量（時刻の列と上の操作だけが読む）
     @State private var scroll = GuideScrollState()
     /// マウスの下の番組と吹き出し
@@ -404,10 +446,13 @@ struct GuideView: View {
                                 .accessibilityLabel("この局をライブで見る")
                         }
                     }
-                    Text(station.coverage.map { "取得 \(ProgramGuide.receivedLabel($0.lastReceived))" }
-                         ?? (hasAnyCoverage ? "nasne の番組表なし" : "未取得"))
-                        .scaledFont(.caption)
-                        .foregroundStyle(.secondary)
+                    // 狭い幅では取得の時刻を省く（2026-11-23。番組表の無い局・まだ取っていない局の断りは残す）
+                    if !(compact && station.coverage != nil) {
+                        Text(station.coverage.map { "取得 \(ProgramGuide.receivedLabel($0.lastReceived))" }
+                             ?? (hasAnyCoverage ? "nasne の番組表なし" : "未取得"))
+                            .scaledFont(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -560,6 +605,8 @@ private final class GuideLoadState {
 
 /// 上の操作（日付・「現在」・取り直し・閉じる）。送った位置の日付を出すので、送った量のうち「何日目か」だけを見る
 private struct GuideToolbar: View {
+    /// 狭い幅の形（日付の曜日の括弧を省く）
+    @Environment(\.usesCompactLayout) private var compact
     let days: [GuideDay]
     let scroll: GuideScrollState
     let refreshState: ProgramGuideRefreshState
@@ -568,39 +615,71 @@ private struct GuideToolbar: View {
     let showDay: (Int) -> Void
     let showNow: () -> Void
     let dismiss: (() -> Void)?
+    /// 帯の中央に出す画面の名前（iPhone の横向き。入らない機種では出さない）
+    @Environment(\.mainBarTitle) private var title
 
     var body: some View {
-        let visible = min(scroll.visibleDay, max(days.count - 1, 0))
-        HStack(spacing: ScreenActionBarLayout.spacing) {
-            ControlGroup {
-                Button("前の日", systemImage: "chevron.left") { moveDay(-1) }
-                    .disabled(days.isEmpty || visible == 0)
-                Button("次の日", systemImage: "chevron.right") { moveDay(1) }
-                    .disabled(days.isEmpty || visible == days.count - 1)
-            }
-            .labelStyle(.iconOnly)
-            .fixedSize()
-            Picker("日付", selection: Binding(get: { days.isEmpty ? nil : visible }, set: { if let index = $0 { showDay(index) } })) {
-                ForEach(days.indices, id: \.self) { index in
-                    Text(ProgramGuide.dayLabel(days[index])).tag(Optional(index))
+        Group {
+            if let title {
+                ViewThatFits(in: .horizontal) {
+                    CenteredRow(spacing: ScreenActionBarLayout.spacing) {
+                        HStack(spacing: ScreenActionBarLayout.spacing) { dayControls }
+                        MainBarTitle(text: title)
+                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls }
+                    }
+                    row
                 }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
-            // 今の時刻へ送る（2026-11-20 に「今」から改めた）
-            Button("現在", action: showNow)
-            Spacer()
-            refreshStatus
-            ScreenRefreshButton(help: "番組表を更新する（⌘R。nasne の番組表が変わっていなければ読み込まない）",
-                                isRefreshing: refreshState.isRunning, action: refresh)
-            if let dismiss {
-                Button("閉じる", action: dismiss)
-                    .keyboardShortcut(.cancelAction)
+            } else {
+                row
             }
         }
-        .padding(.horizontal, ScreenActionBarLayout.horizontalPadding)
-        .padding(.vertical, ScreenActionBarLayout.verticalPadding)
+        // 録画・予約・情報の帯と同じ余白（狭い幅では段の高さを揃える）
+        .screenActionBarPadding()
+    }
+
+    /// 名前を出さない帯
+    private var row: some View {
+        HStack(spacing: ScreenActionBarLayout.spacing) {
+            dayControls
+            Spacer()
+            trailingControls
+        }
+    }
+
+    /// 左の日付の操作（前後の日・日付・「現在」）
+    @ViewBuilder private var dayControls: some View {
+        let visible = min(scroll.visibleDay, max(days.count - 1, 0))
+        ControlGroup {
+            Button("前の日", systemImage: "chevron.left") { moveDay(-1) }
+                .disabled(days.isEmpty || visible == 0)
+            Button("次の日", systemImage: "chevron.right") { moveDay(1) }
+                .disabled(days.isEmpty || visible == days.count - 1)
+        }
+        .labelStyle(.iconOnly)
+        .fixedSize()
+        Picker("日付", selection: Binding(get: { days.isEmpty ? nil : visible }, set: { if let index = $0 { showDay(index) } })) {
+            ForEach(days.indices, id: \.self) { index in
+                Text(compact ? GuideDayText.compact(days[index]) : ProgramGuide.dayLabel(days[index])).tag(Optional(index))
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .fixedSize()
+        // 今の時刻へ送る（2026-11-20 に「今」から改めた）
+        Button("現在", action: showNow)
+    }
+
+    /// 右の操作（更新の時刻・「更新」・「ライブ」「設定」・閉じる）
+    @ViewBuilder private var trailingControls: some View {
+        refreshStatus
+        ScreenRefreshButton(help: "番組表を更新する（⌘R。nasne の番組表が変わっていなければ読み込まない）",
+                            isRefreshing: refreshState.isRunning, action: refresh)
+        // iPhone の横向き（ナビゲーションの帯を隠すとき）は「ライブ」「設定」
+        MainBarAccessoryButtons()
+        if let dismiss {
+            Button("閉じる", action: dismiss)
+                .keyboardShortcut(.cancelAction)
+        }
     }
 
     /// 最後に更新した時刻（更新している・更新できなかったことは知らせの帯に出す）

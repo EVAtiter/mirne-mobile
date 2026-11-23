@@ -178,11 +178,11 @@ private struct ControlMenuItems: View {
         .disabled(!viewer || !recording || !playback.canChangeRate)
 
         Divider()
-        // ライブの局
-        Button("前の局") { environment.stepLive(-1) }
+        // ライブの局。↑ で次（並びの後ろ）、↓ で前（テレビのリモコンのチャンネルの ▲ ▼ と同じ向き。2026-11-22 に逆から直した）
+        Button("次の局") { environment.stepLive(1) }
             .keyboardShortcut(.upArrow, modifiers: [])
             .disabled(!viewer || !live)
-        Button("次の局") { environment.stepLive(1) }
+        Button("前の局") { environment.stepLive(-1) }
             .keyboardShortcut(.downArrow, modifiers: [])
             .disabled(!viewer || !live)
         Menu("局を選ぶ") {

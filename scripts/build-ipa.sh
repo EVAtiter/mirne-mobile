@@ -1,5 +1,5 @@
 #!/bin/bash
-# iPad 版の署名なしの IPA を作り、同じ Release に添える FFmpeg のソースを並べる。
+# iOS 版（iPhone・iPad）の署名なしの IPA を作り、同じ Release に添える FFmpeg のソースを並べる。
 #
 #   scripts/build-ipa.sh
 #
@@ -7,7 +7,7 @@
 #   mirne-mobile-<版>.ipa     署名していない IPA。使う人が LiveContainer・AltStore などで自分で署名して入れる
 #   ffmpeg-<版>.tar.xz        同梱した FFmpeg のソース（ffmpeg.org のものそのまま。LGPL-2.1 のため IPA と同じ場所に置く）
 #
-# archive（Release・署名なし）→ Payload にまとめて zip → 中身の検査（版・最低 OS・arm64・FFmpeg のフレームワーク・
+# archive（Release・署名なし）→ Payload にまとめて zip → 中身の検査（版・最低 OS・対象の機種と向き・arm64・FFmpeg のフレームワーク・
 # ライセンスの全文・NOTICE・署名が無いこと・個人の情報）の順に行う
 set -euo pipefail
 
@@ -22,6 +22,8 @@ FFMPEG_SHA256="$(sed -n 's/^FFMPEG_SHA256="\(.*\)"$/\1/p' scripts/build-ffmpeg-i
 FFMPEG_TARBALL="build/ffmpeg/src/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 # 配る IPA に入っているべき対応 OS の下限（project.yml の IPHONEOS_DEPLOYMENT_TARGET と同じ）
 EXPECTED_MIN_OS="18.0"
+# 配る IPA の対象の機種（1 = iPhone・2 = iPad。project.yml の TARGETED_DEVICE_FAMILY と同じ）
+EXPECTED_DEVICE_FAMILY="1,2"
 
 rm -rf "$OUT"
 mkdir -p "$WORK/Payload"
@@ -45,6 +47,15 @@ MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PLIST")"
 # ── 中身の検査 ──
 fail() { echo "✗ $*" >&2; exit 1; }
 [ "$MIN_OS" = "$EXPECTED_MIN_OS" ] || fail "最低 OS が $MIN_OS（$EXPECTED_MIN_OS のはず）"
+DEVICE_FAMILY="$(plutil -extract UIDeviceFamily json -o - "$PLIST" | tr -d '[] \n')"
+[ "$DEVICE_FAMILY" = "$EXPECTED_DEVICE_FAMILY" ] || fail "対象の機種が $DEVICE_FAMILY（$EXPECTED_DEVICE_FAMILY のはず）"
+# iPhone の向き（縦と横の左右）と iPad の向きの両方があること
+for key in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do
+    for orientation in UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight; do
+        plutil -extract "$key" json -o - "$PLIST" 2>/dev/null | grep -q "\"$orientation\"" \
+            || fail "$key に $orientation が無い"
+    done
+done
 lipo -archs "$APP/mirne mobile" | grep -qx arm64 || fail "実行ファイルが arm64 だけではない"
 for name in avcodec avutil; do
     [ -f "$APP/Frameworks/$name.framework/$name" ] || fail "$name.framework が入っていない"
@@ -66,5 +77,5 @@ IPA="$OUT/mirne-mobile-${VERSION}.ipa"
 cp "$FFMPEG_TARBALL" "$OUT/"
 
 rm -rf "$WORK"
-echo "→ $IPA（$VERSION build $BUILD・最低 iPadOS $MIN_OS）"
+echo "→ $IPA（$VERSION build $BUILD・iPhone と iPad・最低 iOS / iPadOS $MIN_OS）"
 shasum -a 256 "$IPA" "$OUT/ffmpeg-${FFMPEG_VERSION}.tar.xz"

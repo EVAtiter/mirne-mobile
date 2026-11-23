@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// iPad 版の入口。部品の組み立て（`AppEnvironment`）は macOS 版と共通で、ここで 1 回だけ作る
+/// iOS 版（iPad・iPhone）の入口。部品の組み立て（`AppEnvironment`）は macOS 版と共通で、ここで 1 回だけ作る
 @main
 struct MirneMobileiOSApp: App {
     @State private var environment = AppEnvironment.live()

@@ -24,8 +24,8 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
     # 版とビルド番号はここだけに書く（Info.plist は $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) で参照する）
-    MARKETING_VERSION: "1.1.0"
-    CURRENT_PROJECT_VERSION: "9"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "11"
   configs:
     # xcodegen は #if DEBUG 用の DEBUG を自動定義しないので明示する
     Debug:
@@ -199,8 +199,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.slack-kingdom.mirne-mobile
         INFOPLIST_FILE: Sources/iOSApp/Info.plist
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-        # 最初の版は iPad だけ
-        TARGETED_DEVICE_FAMILY: "2"
+        # iPhone と iPad（1.1.0 までは iPad だけ。2026-11-23 に iPhone も対象にした）
+        TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: NO
 
   # 共有の部品の単体試験を iOS のシミュレータで流す（試験の中身は macOS と同じ）
@@ -227,7 +227,7 @@ targets:
         # 試験のバンドルの中に同梱した FFmpeg のフレームワークを見つける
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/Frameworks"
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-        TARGETED_DEVICE_FAMILY: "2"
+        TARGETED_DEVICE_FAMILY: "1,2"
 
 schemes:
   mirne-mobile:

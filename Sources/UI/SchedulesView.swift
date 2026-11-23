@@ -15,8 +15,17 @@ struct SchedulesView: View {
     /// 見えている行の枠（カードを選んだ行の高さに置くため）
     @State private var rowFrames = ListRowFrames<String>()
     let scheduleService: any ScheduleService
+    /// 狭い幅の形（「新規予約」は絵だけ・カードはシート）
+    @Environment(\.usesCompactLayout) private var compact
+    /// カードのシートを閉じ終えてからすること（画質の変更のシートは、カードのシートを出している間は出せない）
+    @State private var afterCardSheet: (() -> Void)?
 
     var body: some View {
+        // 消す前の確かめ。カードのシートを出しているときは、シートの側で出す（下の画面からはシートの上に出せない）
+        deletionAlert(screen, isPresented: pendingDeletion != nil && !showsCardSheet)
+    }
+
+    private var screen: some View {
         // 上の帯（番組表と同じ位置）に「＋ 新規予約」と「更新」。帯の下の横線で、左右の仕切りの縦線を止める
         // （仕切りの縦線がツールバーまで突き抜けていた。2026-11-20）
         VStack(spacing: 0) {
@@ -26,9 +35,15 @@ struct SchedulesView: View {
             }
             // 一覧は窓の幅いっぱい。選んだ予約の詳細は一覧に重ねるカードに出す（2026-11-22。前は右に区切った詳細の欄。録画の画面と同じ）
             list
-                .overlay { SelectionCardOverlay(id: model.selectedID, rows: rowFrames) { _ in card } }
+                .overlay {
+                    if !compact { SelectionCardOverlay(id: model.selectedID, rows: rowFrames) { _ in card } }
+                }
         }
         .navigationTitle("予約")
+        // 狭い幅では、選んだ予約のカードを下からのシートで出す
+        .selectionCardSheet(isPresented: showsCardSheet, close: { model.selectedID = nil }, onDismiss: runAfterCardSheet) {
+            deletionAlert(card, isPresented: pendingDeletion != nil)
+        }
         .task { if model.schedules == .idle { await model.reload() } }
         // メニュー：新しい予約…（⌘N）・予約を削除…（⌘⌫）・更新（⌘R）
         .onChange(of: environment.mainCommands.pending, initial: true) {
@@ -62,8 +77,21 @@ struct SchedulesView: View {
                 }
             }
         }
-        // 消す前の確かめ（文は 2026-11-19 に）。閉じたときの Binding の set では何もしない
-        .alert("この予約を削除しますか？", isPresented: Binding(get: { pendingDeletion != nil }, set: { _ in })) {
+    }
+
+    /// カードをシートで出すか（狭い幅で、予約を選んでいるとき）
+    private var showsCardSheet: Bool { compact && model.selectedSchedule != nil }
+
+    /// カードのシートを閉じ終えたら、預けていた操作をする
+    private func runAfterCardSheet() {
+        let action = afterCardSheet
+        afterCardSheet = nil
+        action?()
+    }
+
+    /// 消す前の確かめ（文は 2026-11-19 に）。閉じたときの Binding の set では何もしない
+    private func deletionAlert<Content: View>(_ content: Content, isPresented: Bool) -> some View {
+        content.alert("この予約を削除しますか？", isPresented: Binding(get: { isPresented }, set: { _ in })) {
             Button("削除", role: .destructive) {
                 guard let schedule = pendingDeletion else { return }
                 pendingDeletion = nil
@@ -88,6 +116,8 @@ struct SchedulesView: View {
         Button {
             sheet = .create(ScheduleCreationModel(channels: model.channels, service: scheduleService))
         } label: { Label("新規予約", systemImage: "plus") }
+            // 狭い幅では絵だけ（2026-11-23）
+            .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
             .disabled(model.channels.isEmpty)
             .help(model.channels.isEmpty ? "局の一覧を読み込めていないので、予約を作れません" : "時刻を指定して予約する")
     }
@@ -107,8 +137,10 @@ struct SchedulesView: View {
                     .reportsRowFrame(schedule.id, into: rowFrames)
                     .tag(schedule.id)
             }
+            .compactListTopMargin()
             // カードの外を押したら閉じる（行を押したときは、カードがその行へ移る）。esc でも閉じる（どちらも選択を外す）
-            .closesSelectionCardOnOutsideTap(rows: rowFrames, isOpen: model.selectedID != nil) { model.selectedID = nil }
+            // 狭い幅ではカードはシートなので見張らない（シートの中を押しても閉じてしまう）
+            .closesSelectionCardOnOutsideTap(rows: rowFrames, isOpen: model.selectedID != nil && !compact) { model.selectedID = nil }
             .onKeyPress(.escape) {
                 guard model.selectedID != nil else { return .ignored }
                 model.selectedID = nil
@@ -133,10 +165,21 @@ struct SchedulesView: View {
             ScheduleCard(
                 schedule: schedule, channelName: model.channelName(schedule.channel), timing: timing,
                 // 画質の変更は始まる前の予約だけ
-                editQuality: timing == .upcoming ? { sheet = .edit(ScheduleEditModel(original: schedule, service: scheduleService)) } : nil,
+                editQuality: timing == .upcoming ? { editQuality(schedule) } : nil,
                 delete: { pendingDeletion = schedule },
                 close: { model.selectedID = nil })
         }
+    }
+
+    /// 画質の変更のシートを出す。カードのシートから押したときは、カードのシートを閉じ終えてから出す
+    private func editQuality(_ schedule: RecordSchedule) {
+        let edit = ScheduleSheet.edit(ScheduleEditModel(original: schedule, service: scheduleService))
+        if showsCardSheet {
+            afterCardSheet = { sheet = edit }
+            model.selectedID = nil
+            return
+        }
+        sheet = edit
     }
 }
 
@@ -152,6 +195,13 @@ enum ScheduleText {
         return "\(start)〜\(end)"
     }
 
+    /// 狭い幅の行の「11/20(木) 21:00〜21:54」。終わりが別の日なら終わりにも日付を付ける
+    static func compactTimeRange(_ schedule: RecordSchedule) -> String {
+        let sameDay = Calendar.current.isDate(schedule.start, inSameDayAs: schedule.end)
+        let end = sameDay ? CompactDateText.time(schedule.end) : CompactDateText.dateTime(schedule.end)
+        return "\(CompactDateText.dateTime(schedule.start))〜\(end)"
+    }
+
     static func title(_ schedule: RecordSchedule) -> String {
         guard let title = schedule.title, !title.isEmpty else { return "（番組名なし）" }
         return title
@@ -163,6 +213,10 @@ struct ScheduleRow: View {
     let schedule: RecordSchedule
     let channelName: String
     let timing: ScheduleTiming
+    /// 狭い幅の形（2 行目を短くする）
+    @Environment(\.usesCompactLayout) private var compact
+    /// 行の頭のロゴ（狭い幅では、ロゴの出る局の局名を省く）
+    @Environment(ChannelLogoImages.self) private var logos: ChannelLogoImages?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -183,9 +237,10 @@ struct ScheduleRow: View {
                 Text(ScheduleText.title(schedule)).lineLimit(1)
             }
             HStack(spacing: 8) {
-                Text(ScheduleText.timeRange(schedule))
+                // 狭い幅では日時を短い形にし、局名は行の頭のロゴで分かるので省く（ロゴの無い局だけ出す。2026-11-23）
+                Text(compact ? ScheduleText.compactTimeRange(schedule) : ScheduleText.timeRange(schedule))
                 if let duration = RecordingFormat.duration(schedule.durationSeconds) { Text("（\(duration)）") }
-                Text(channelName).lineLimit(1)
+                if !(compact && logos?.images[schedule.channel.logoKey] != nil) { Text(channelName).lineLimit(1) }
                 Text(QualityMode.label(schedule.desiredQualityMode))
             }
             .scaledFont(.caption).foregroundStyle(.secondary)
@@ -231,7 +286,15 @@ struct ScheduleCard: View {
                 HStack {
                     if let editQuality { Button("画質を変更", action: editQuality).buttonStyle(.bordered) }
                     Spacer(minLength: 0)
-                    if let delete { Button("削除…", role: .destructive, action: delete) }
+                    if let delete {
+                        Button(role: .destructive, action: delete) {
+                            // ゴミ箱の絵だけ（録画のカードと同じ。2026-11-23。どの OS も）
+                            Image(systemName: CardDeleteSymbol.name)
+                        }
+                        .accessibilityLabel("削除…")
+                        .buttonStyle(.bordered)
+                        .help("この予約を削除する")
+                    }
                 }
             }
         }

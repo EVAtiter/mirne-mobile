@@ -48,6 +48,10 @@ private struct SelectionCardMaxHeightKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    /// 操作のボタンを枠の下端に置くか（シートに入れたときだけ。シートの高さは中身によらず決まった段なので、
+    /// ボタンの位置を中身の量で動かさない。2026-11-23）
+    @Entry var selectionCardPinsActionsToBottom = false
+
     var selectionCardMaxHeight: CGFloat {
         get { self[SelectionCardMaxHeightKey.self] }
         set { self[SelectionCardMaxHeightKey.self] = newValue }
@@ -111,6 +115,37 @@ struct SelectionCardOverlay<ID: Hashable, Card: View>: View {
     }
 }
 
+extension View {
+    /// 狭い幅では、カードを一覧に重ねず下からのシートで出す（重ねると画面の幅いっぱいになり、選んだ行の下を隠した。2026-11-23）。
+    /// 中身とボタンは重ねるカードと同じ。シートを下へ払って閉じたら `close`（選択を外す）。
+    /// シートを出している間は、ほかのシートや再生の画面を出せないので、そうした操作は閉じてから行う（`onDismiss`）
+    func selectionCardSheet<Card: View>(isPresented: Bool, close: @escaping () -> Void, onDismiss: @escaping () -> Void,
+                                        @ViewBuilder card: @escaping () -> Card) -> some View {
+        sheet(isPresented: Binding(get: { isPresented }, set: { if !$0 { close() } }), onDismiss: onDismiss) {
+            GeometryReader { geo in
+                card()
+                    // 中身のスクロールの高さをシートの高さで抑える
+                    .environment(\.selectionCardMaxHeight, geo.size.height - SelectionCardSheetLayout.topInset)
+                    .environment(\.selectionCardPinsActionsToBottom, true)
+                    // シートの角は丸みが大きいので、カードの余白に足して内側へ寄せる（題の書き出しが上すぎた。2026-11-23）
+                    .padding(.horizontal, SelectionCardSheetLayout.horizontalInset)
+                    .padding(.top, SelectionCardSheetLayout.topInset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+/// 狭い幅でカードを入れるシートの、カードの余白に足す間（体感の値。iPhone の実機で見て決める）
+enum SelectionCardSheetLayout {
+    /// 左右（8 足したら、390pt で日時の値が 1 行に入らず「…」で切れたので足さない）
+    static let horizontalInset: CGFloat = 0
+    /// 上（シートの角の丸みの分、題を下げる）
+    static let topInset: CGFloat = 16
+}
+
 extension SelectionCardOverlay {
     /// 置いたカードの枠（窓の座標）
     func cardRect(origin: CGPoint, size: CGSize, top: CGFloat) -> CGRect {
@@ -127,6 +162,7 @@ struct SelectionCardContent<Body: View, Actions: View>: View {
     @ViewBuilder let content: Body
     @ViewBuilder let actions: Actions
     @Environment(\.selectionCardMaxHeight) private var maxHeight
+    @Environment(\.selectionCardPinsActionsToBottom) private var pinsActionsToBottom
     /// 中身（スクロールの中）の高さ
     @State private var contentHeight: CGFloat = 0
     /// 題の段の高さ
@@ -155,10 +191,13 @@ struct SelectionCardContent<Body: View, Actions: View>: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .frame(height: min(contentHeight, scrollLimit))
+            // シートでは、残りの高さを空けてボタンを下端に置く
+            if pinsActionsToBottom { Spacer(minLength: 0) }
             actions
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { actionsHeight = $0 }
         }
         .padding(SelectionCardLayout.padding)
+        .frame(maxHeight: pinsActionsToBottom ? .infinity : nil, alignment: .top)
     }
 
     /// スクロールに使える高さ（使える高さから題・ボタン・余白を引いたもの。少なくとも数行は見せる）

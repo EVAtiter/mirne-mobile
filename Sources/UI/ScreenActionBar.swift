@@ -15,16 +15,45 @@ struct ScreenActionBar<Leading: View>: View {
     var status: String? = nil
     @ViewBuilder let leading: Leading
 
+    /// 帯の中央に出す画面の名前（ナビゲーションの帯を隠しているとき。主画面が配る）
+    @Environment(\.mainBarTitle) private var title
+
     var body: some View {
         VStack(spacing: 0) {
+            Group {
+                if let title {
+                    // 画面の名前を中央に。入らなければ名前を出さない形にする
+                    ViewThatFits(in: .horizontal) {
+                        CenteredRow(spacing: ScreenActionBarLayout.spacing) {
+                            // 左の操作が無い画面（情報）でも 3 つに数えるよう、器に入れる
+                            HStack(spacing: ScreenActionBarLayout.spacing) { leading }
+                            MainBarTitle(text: title)
+                            HStack(spacing: ScreenActionBarLayout.spacing) {
+                                if let status { BarStatusText(text: status) }
+                                ScreenRefreshButton(help: refreshHelp, isRefreshing: isRefreshing, action: refresh)
+                                MainBarAccessoryButtons()
+                            }
+                        }
+                        row
+                    }
+                } else {
+                    row
+                }
+            }
+            .screenActionBarPadding()
+            Divider()
+        }
+    }
+
+    /// 名前を出さない帯（左の操作・一覧の状態・「更新」・右端の「ライブ」「設定」）
+    private var row: some View {
+        HStack(spacing: ScreenActionBarLayout.spacing) {
             ScreenActionBarRow(spacing: ScreenActionBarLayout.spacing) {
                 leading
                 BarStatusText(text: status ?? "")
                 ScreenRefreshButton(help: refreshHelp, isRefreshing: isRefreshing, action: refresh)
             }
-            .padding(.horizontal, ScreenActionBarLayout.horizontalPadding)
-            .padding(.vertical, ScreenActionBarLayout.verticalPadding)
-            Divider()
+            MainBarAccessoryButtons()
         }
     }
 }
@@ -104,10 +133,146 @@ struct ScreenActionBarRow: Layout {
     }
 }
 
+/// 各画面の帯の右端に出す主画面の操作（iPhone の横向きでナビゲーションの帯を隠すとき。帯があるときは nil）
+struct MainBarAccessories {
+    /// ライブで見る（前に見た局）。視聴の画面を開けなければ nil
+    let watchLive: (() -> Void)?
+    let liveDisabled: Bool
+    let openSettings: () -> Void
+}
+
+extension EnvironmentValues {
+    /// 各画面の帯の右端に出す「ライブ」「設定」（ナビゲーションの帯を隠しているときだけ。主画面が配る）
+    @Entry var mainBarAccessories: MainBarAccessories? = nil
+    /// 各画面の帯の中央に出す画面の名前（ナビゲーションの帯を隠しているときだけ。録画は検索の欄で幅が足りないので出さない。主画面が配る）
+    @Entry var mainBarTitle: String? = nil
+}
+
+/// 帯の中央の画面の名前（ナビゲーションの帯の名前と同じ形）
+struct MainBarTitle: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.headline)
+            .lineLimit(1)
+            .fixedSize()
+    }
+}
+
+/// 帯の右端の「ライブ」「設定」（絵だけ。ナビゲーションの帯の同じボタンの代わり）
+struct MainBarAccessoryButtons: View {
+    @Environment(\.mainBarAccessories) private var accessories
+
+    var body: some View {
+        if let accessories {
+            HStack(spacing: ScreenActionBarLayout.spacing) {
+                if let watchLive = accessories.watchLive {
+                    Button { watchLive() } label: { Label("ライブ", systemImage: LiveSymbol.watch) }
+                        .disabled(accessories.liveDisabled)
+                        .help("ライブで見る（前に見た局）")
+                }
+                Button(action: accessories.openSettings) { Label("設定", systemImage: MainToolbarSymbol.settings) }
+                    .help("設定を開く")
+            }
+            .labelStyle(.iconOnly)
+        }
+    }
+}
+
+/// 帯の検索の欄の形（録画の検索の欄。帯の高さを揃える見本にも使う）
+struct BarSearchFieldChrome<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: BarSearchFieldLayout.iconSpacing) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            content
+        }
+        .padding(.horizontal, BarSearchFieldLayout.horizontalPadding)
+        .padding(.vertical, BarSearchFieldLayout.verticalPadding)
+        .background(.background, in: RoundedRectangle(cornerRadius: BarSearchFieldLayout.cornerRadius))
+        .overlay(RoundedRectangle(cornerRadius: BarSearchFieldLayout.cornerRadius).strokeBorder(.separator))
+    }
+}
+
+/// 帯の検索の欄の寸法
+enum BarSearchFieldLayout {
+    static let iconSpacing: CGFloat = 4
+    static let horizontalPadding: CGFloat = 6
+    static let verticalPadding: CGFloat = 3
+    static let cornerRadius: CGFloat = 6
+}
+
+/// 帯の段の高さの見本（見えない。幅 0）：帯に入る背の高い部品（録画の検索の欄・番組表の前後の日のボタン・メニューの選択・ボタンの形の切り替え）を重ねる。
+/// どの画面の帯にも入れるので、段の高さは中身によらずこの高さ以上になり、「更新」が同じ位置に来る。
+/// 文字の大きさの設定が変わっても部品と一緒に伸びる（決め打ちの高さでは、iPad の実機で揃わなかった。2026-11-23）
+private struct BarRowHeightProbe: View {
+    @Environment(\.usesCompactLayout) private var compact
+
+    var body: some View {
+        ZStack {
+            BarSearchFieldChrome { TextField("番組名・局名", text: .constant("")).textFieldStyle(.plain) }
+            ControlGroup {
+                Button("前の日", systemImage: "chevron.left") {}
+                Button("次の日", systemImage: "chevron.right") {}
+            }
+            .labelStyle(.iconOnly)
+            .fixedSize()
+            // メニューの選択（録画の絞り込み・並べ替え、番組表の日付）と、ボタンの形の切り替え（「番組名でまとめる」。ふつうのボタンより背が高い）。
+            // 狭い幅では見本にメニューの選択を入れない（入れると、番組表の日付のメニューの ⌃⌄ の印が消えた。狭い幅は段の高さの下限で揃う）
+            if !compact {
+                Picker("見本", selection: .constant(0)) { Text("すべて").tag(0) }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+            }
+            Toggle(isOn: .constant(false)) { Label("番組名でまとめる", systemImage: "rectangle.stack") }
+                .toggleStyle(.button)
+                .fixedSize()
+        }
+        .frame(width: 0)
+        .clipped()
+        .hidden()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
+
 /// 各画面の上の帯の寸法（番組表の帯と同じ値。番組表の帯もこれを使う）
 enum ScreenActionBarLayout {
     /// 帯の中の部品の間
     static let spacing: CGFloat = 12
     static let horizontalPadding: CGFloat = 12
     static let verticalPadding: CGFloat = 8
+    /// 狭い幅の帯の上の余白（帯の上にはナビゲーションの帯の余白があり、上下で同じ 8 にすると上が空いて見えた。2026-11-23）
+    static let compactTopPadding: CGFloat = 0
+    /// 狭い幅の帯の段の高さ（中身でなくこの高さに揃え、どの画面でも「更新」が同じ位置に来るようにする。2026-11-23。
+    /// いちばん高い録画の検索の欄（約 37pt）が入る高さ。32 では録画と番組表の帯だけ高くなり、揃わなかった）
+    static let compactRowHeight: CGFloat = 38
+}
+
+extension View {
+    /// 上の帯の段の余白（録画・予約・情報の帯と番組表の帯で同じものを使う）。狭い幅では段の高さを揃え、上の余白を詰める
+    func screenActionBarPadding() -> some View {
+        modifier(ScreenActionBarPadding())
+    }
+}
+
+private struct ScreenActionBarPadding: ViewModifier {
+    @Environment(\.usesCompactLayout) private var compact
+    /// ナビゲーションの帯を隠しているか（帯が画面の上端に来るので、上の余白を詰めない）
+    @Environment(\.mainBarAccessories) private var accessories
+
+    func body(content: Content) -> some View {
+        HStack(spacing: 0) {
+            // 段の高さを揃える見本（OS ごと。iOS は入れる）
+            if ScreenActionBarPlatform.alignsRowHeight { BarRowHeightProbe() }
+            content
+        }
+            .frame(minHeight: compact ? ScreenActionBarLayout.compactRowHeight : nil)
+            .padding(.horizontal, ScreenActionBarLayout.horizontalPadding)
+            .padding(.top, compact && accessories == nil ? ScreenActionBarLayout.compactTopPadding : ScreenActionBarLayout.verticalPadding)
+            .padding(.bottom, ScreenActionBarLayout.verticalPadding)
+    }
 }

@@ -17,8 +17,17 @@ struct RecordingsView: View {
     @State private var pendingDeletion: RecordedTitle?
     /// 見えている行の枠（カードを選んだ行の高さに置くため）
     @State private var rowFrames = ListRowFrames<RecordedTitle.ID>()
+    /// 狭い幅の形（カードはシート）
+    @Environment(\.usesCompactLayout) private var compact
+    /// カードのシートを閉じ終えてからすること（再生の画面は、シートを出している間は出せない）
+    @State private var afterCardSheet: (() -> Void)?
 
     var body: some View {
+        // 消す前の確かめ。カードのシートを出しているときは、シートの側で出す（下の画面からはシートの上に出せない）
+        deletionAlert(screen, isPresented: pendingDeletion != nil && !showsCardSheet)
+    }
+
+    private var screen: some View {
         // 上の帯（番組表と同じ位置）に検索・絞り込み・並べ替えと「更新」。帯の下の横線で、左右の仕切りの縦線を止める
         // （仕切りの縦線がツールバーまで突き抜けていた。2026-11-20）
         VStack(spacing: 0) {
@@ -28,9 +37,15 @@ struct RecordingsView: View {
             }
             // 一覧は窓の幅いっぱい。選んだ録画の情報は一覧に重ねるカードに出す（2026-11-22。前は右に区切った情報の欄）
             list
-                .overlay { SelectionCardOverlay(id: model.selectedID, rows: rowFrames) { _ in card } }
+                .overlay {
+                    if !compact { SelectionCardOverlay(id: model.selectedID, rows: rowFrames) { _ in card } }
+                }
         }
         .navigationTitle("録画")
+        // 狭い幅では、選んだ録画のカードを下からのシートで出す
+        .selectionCardSheet(isPresented: showsCardSheet, close: { model.selectedID = nil }, onDismiss: runAfterCardSheet) {
+            deletionAlert(card, isPresented: pendingDeletion != nil)
+        }
         // 検索・視聴の状態・まとめる・並べ替えと「更新」は上の帯（ツールバーから一覧の上へ、のちに画面の上の帯へ移した）
         .task { if model.titles == .idle { await model.reload() } }
         // メニュー：録画を削除…（⌘⌫。選んだ録画で確かめを出す）・更新（⌘R）
@@ -41,8 +56,21 @@ struct RecordingsView: View {
             }
             if center.consume(.refresh) { Task { await model.reload() } }
         }
-        // 消す前の確かめ（文は予約の削除〔2026-11-19 に〕に揃えた）。閉じたときの Binding の set では何もしない
-        .alert("この録画を削除しますか？", isPresented: Binding(get: { pendingDeletion != nil }, set: { _ in })) {
+    }
+
+    /// カードをシートで出すか（狭い幅で、録画を選んでいるとき）
+    private var showsCardSheet: Bool { compact && model.selectedTitle != nil }
+
+    /// カードのシートを閉じ終えたら、預けていた操作をする
+    private func runAfterCardSheet() {
+        let action = afterCardSheet
+        afterCardSheet = nil
+        action?()
+    }
+
+    /// 消す前の確かめ（文は予約の削除〔2026-11-19 に〕に揃えた）。閉じたときの Binding の set では何もしない
+    private func deletionAlert<Content: View>(_ content: Content, isPresented: Bool) -> some View {
+        content.alert("この録画を削除しますか？", isPresented: Binding(get: { isPresented }, set: { _ in })) {
             Button("削除", role: .destructive) {
                 guard let title = pendingDeletion else { return }
                 pendingDeletion = nil
@@ -94,6 +122,7 @@ struct RecordingsView: View {
                     ForEach(visible) { title in titleRow(title) }
                 }
             }
+            .compactListTopMargin()
             // 行のダブルクリック・Return（iPad は行のダブルタップ）で、カードの最初の再生のボタンと同じ再生。まとめの行は 1 回のクリック（タップ）で開閉する（上）。
             // 右クリックのメニューは「保護」（保護した録画は「解除」）と「削除…」（1 件ずつ。押せないときは理由を添える）。
             // 長押しのメニュー（iPad）も同じ。視聴の画面を開けないときは、行のダブルクリックで再生しない
@@ -117,7 +146,8 @@ struct RecordingsView: View {
                 }
             }
             // カードの外を押したら閉じる（行を押したときは、カードがその行へ移る）。esc でも閉じる（どちらも選択を外す）
-            .closesSelectionCardOnOutsideTap(rows: rowFrames, isOpen: model.selectedID != nil) { model.selectedID = nil }
+            // 狭い幅ではカードはシートなので見張らない（シートの中を押しても閉じてしまう）
+            .closesSelectionCardOnOutsideTap(rows: rowFrames, isOpen: model.selectedID != nil && !compact) { model.selectedID = nil }
             .onKeyPress(.escape) {
                 guard model.selectedID != nil else { return .ignored }
                 model.selectedID = nil
@@ -159,6 +189,15 @@ struct RecordingsView: View {
     /// 視聴ウィンドウで再生している録画なら、別の画質のボタンは画質の切り替え・同じ画質は窓を前に出すだけ
     private func play(_ title: RecordedTitle, _ action: RecordingPlayAction) {
         guard let openViewer, model.canPlay, !environment.playback.state.isStarting else { return }
+        // カードのシートから押したときは、シートを閉じ終えてから再生の画面を出す
+        if showsCardSheet {
+            afterCardSheet = { [environment] in
+                environment.playFromList(title, action)
+                openViewer()
+            }
+            model.selectedID = nil
+            return
+        }
         environment.playFromList(title, action)
         openViewer()
     }
@@ -237,6 +276,8 @@ struct RecordingsFilterBar: View {
     @Environment(AppEnvironment.self) private var environment
     /// 検索欄に打てる状態か（編集のメニューの「検索」〔⌘F〕で移る）
     @FocusState private var searchFocused: Bool
+    /// 狭い幅の形（視聴の状態と並べ替えを絵のメニューにする）
+    @Environment(\.usesCompactLayout) private var compact
 
     var body: some View {
         // 画面の上の帯（ScreenActionBar）の左に 1 段で並べる（前は一覧の上に 2 段）。検索の欄は並べ替えの右（2026-11-21）
@@ -258,8 +299,7 @@ struct RecordingsFilterBar: View {
 
     /// 番組名・局名で絞る（ツールバーの `.searchable` から移した。2026-11-20）
     private var searchField: some View {
-        HStack(spacing: RecordingsFilterBarLayout.searchIconSpacing) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+        BarSearchFieldChrome {
             TextField("番組名・局名", text: $model.searchText)
                 .focused($searchFocused)
                 .textFieldStyle(.plain)
@@ -270,19 +310,49 @@ struct RecordingsFilterBar: View {
                     .help("検索の文字を消す")
             }
         }
-        .padding(.horizontal, RecordingsFilterBarLayout.searchPadding)
-        .padding(.vertical, RecordingsFilterBarLayout.searchVerticalPadding)
-        .background(.background, in: RoundedRectangle(cornerRadius: RecordingsFilterBarLayout.searchCornerRadius))
-        .overlay(RoundedRectangle(cornerRadius: RecordingsFilterBarLayout.searchCornerRadius).strokeBorder(.separator))
     }
 
     /// 視聴の状態・まとめる・並べ替え。メニューの見出し（「視聴の状態」「並べ替え」）は出さない（2026-11-21。マウスを載せると説明が出る）。
     /// 入らなければ「番組名でまとめる」を絵だけにする（最小の窓では文字が途中で切れた）
+    @ViewBuilder
     private var filters: some View {
-        ViewThatFits(in: .horizontal) {
-            filters(groupTitle: true)
-            filters(groupTitle: false)
+        if compact {
+            compactFilters
+        } else {
+            ViewThatFits(in: .horizontal) {
+                filters(groupTitle: true)
+                filters(groupTitle: false)
+            }
         }
+    }
+
+    /// 狭い幅の形：視聴の状態と並べ替えを絵のメニューに、「番組名でまとめる」を絵だけにする（2026-11-23。
+    /// 文字のメニューのままでは検索の欄に「更新」が重なった）。メニューの中の項目と文字は広い幅と同じ
+    private var compactFilters: some View {
+        HStack(spacing: RecordingsFilterBarLayout.spacing) {
+            Menu {
+                Picker("視聴の状態", selection: $model.viewingFilter) {
+                    ForEach(RecordingsModel.ViewingFilter.allCases, id: \.self) { Text(RecordingViewingFilterLabel.text($0)).tag($0) }
+                }
+            } label: {
+                // 絞っている間は塗った絵
+                Image(systemName: model.viewingFilter == .all ? RecordingsFilterSymbol.viewing : RecordingsFilterSymbol.viewingActive)
+            }
+            .accessibilityLabel("視聴の状態：\(RecordingViewingFilterLabel.text(model.viewingFilter))")
+            Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
+                .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .fixedSize()
+            Menu {
+                Picker("並べ替え", selection: $model.sortOrder) {
+                    ForEach(RecordingsModel.SortOrder.allCases, id: \.self) { Text(RecordingSortLabel.text($0)).tag($0) }
+                }
+            } label: {
+                Image(systemName: RecordingsFilterSymbol.sort)
+            }
+            .accessibilityLabel("並べ替え：\(RecordingSortLabel.text(model.sortOrder))")
+        }
+        .fixedSize()
     }
 
     private func filters(groupTitle: Bool) -> some View {
@@ -294,7 +364,7 @@ struct RecordingsFilterBar: View {
             .labelsHidden()
             .fixedSize()
             .help("視聴の状態：まだ見ていない録画・途中まで見た録画だけを出す")
-            Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: "rectangle.stack") }
+            Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
                 .toggleStyle(.button)
                 .labelStyle(groupTitle ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly))
                 .fixedSize()
@@ -333,13 +403,35 @@ enum RecordingViewingFilterLabel {
     }
 }
 
+/// 録画のカードの狭い幅の絵
+enum RecordingCardSymbol {
+    /// 「モバイル」の再生のボタン（三角の右に並べる）
+    static let mobile = "iphone"
+    /// 三角と携帯電話の絵の間
+    static let mobileSpacing: CGFloat = 4
+    /// 「最初から」の再生のボタン（頭へ戻って再生する、の形）
+    static let fromStart = "arrow.counterclockwise"
+}
+
+/// 録画のカードのボタンの並び（体感の値。実機で見て決める）
+enum CardActionLayout {
+    /// 画質ごとの再生のボタンと「最初から」の間（1 段・2 段のどちらでも同じ。中ほどへは離さない）
+    static let fromStartGap: CGFloat = 12
+}
+
+/// 一覧の上の帯の絵（狭い幅のメニューの絵と、「番組名でまとめる」の絵）
+enum RecordingsFilterSymbol {
+    /// 視聴の状態（すべてを出しているとき）
+    static let viewing = "line.3.horizontal.decrease.circle"
+    /// 視聴の状態（未再生・途中までに絞っているとき）
+    static let viewingActive = "line.3.horizontal.decrease.circle.fill"
+    static let sort = "arrow.up.arrow.down"
+    static let group = "rectangle.stack"
+}
+
 /// 一覧の上の帯の寸法
 enum RecordingsFilterBarLayout {
     static let spacing: CGFloat = 8
-    static let searchIconSpacing: CGFloat = 4
-    static let searchPadding: CGFloat = 6
-    static let searchVerticalPadding: CGFloat = 3
-    static let searchCornerRadius: CGFloat = 6
     /// 検索の欄の幅（帯の左に 1 段で並べるので幅を決める）。窓が狭いときは最小の幅まで縮む。
     /// 200 から広げた（2026-11-21）。広げすぎると、帯が件数と取得日時を出せる窓の幅が広くなる（帯は左の操作がこの幅で入るときだけ出す）
     static let searchWidth: CGFloat = 240
@@ -355,6 +447,10 @@ struct TitleRow: View {
     var isDeleting = false
     /// この録画の保護を切り替えている途中か（右端の印の代わりに回る印を出す）
     var isChangingProtection = false
+    /// 狭い幅の形（2 行目を短くする）
+    @Environment(\.usesCompactLayout) private var compact
+    /// 行の頭のロゴ（狭い幅では、ロゴの出る局の局名を省く）
+    @Environment(ChannelLogoImages.self) private var logos: ChannelLogoImages?
 
     var body: some View {
         // 右端の印は 2 行分の高さで縦の中央。未再生の丸と、削除している途中の回る印は同じ場所に出す（2026-11-22。前は番組名の左に青い点）
@@ -369,8 +465,10 @@ struct TitleRow: View {
     @ViewBuilder
     private var trailingMark: some View {
         if isDeleting {
-            Text("削除しています…").scaledFont(.caption).foregroundStyle(.secondary)
+            // 狭い幅では回る印だけ（文は読み上げの名前に回す）
+            if !compact { Text("削除しています…").scaledFont(.caption).foregroundStyle(.secondary) }
             ProgressView().controlSize(.regular)
+                .accessibilityLabel("削除しています")
         } else if isChangingProtection {
             ProgressView().controlSize(.regular)
                 .accessibilityLabel("保護を切り替えています")
@@ -394,9 +492,12 @@ struct TitleRow: View {
                 Text(title.title.isEmpty ? "（番組名なし）" : title.title).lineLimit(1)
             }
             HStack(spacing: 8) {
-                if let start = title.displayStart { Text(start.formatted(date: .abbreviated, time: .shortened)) }
+                // 狭い幅では日時を短い形にし、局名は行の頭のロゴで分かるので省く（ロゴの無い局だけ出す。2026-11-23）
+                if let start = title.displayStart {
+                    Text(compact ? CompactDateText.dateTime(start) : start.formatted(date: .abbreviated, time: .shortened))
+                }
                 if let duration = RecordingFormat.duration(title.durationSeconds) { Text(duration) }
-                if let channel = title.channelName { Text(channel).lineLimit(1) }
+                if let channel = title.channelName, !(compact && showsLogo) { Text(channel).lineLimit(1) }
                 if let quality = RecordingFormat.quality(title.desiredQualityMode) { Text(quality) }
                 if title.isProtected { Image(systemName: "lock.fill").help("保護") }
             }
@@ -414,6 +515,12 @@ struct TitleRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 行の頭にこの局のロゴが出ているか
+    private var showsLogo: Bool {
+        guard let key = title.channel?.logoKey else { return false }
+        return logos?.images[key] != nil
     }
 }
 
@@ -648,11 +755,11 @@ struct TitleCard: View {
             // 1 段に収まらなければ、保護と削除を下の段の右へ回す（ボタンの名前が折り返して 2 行になっていた）
             // 1 段に収まるときは、「最初から」を画質ごとの再生のボタンから離し、残りの幅の中ほどに置く（右へ寄せても「保護」とは
             // くっつけない。最も右でも「最初から」の右端が「保護」の左端まで）。「保護」は「削除…」の左隣
+            // 「最初から」は再生のボタンから決まった間で置く（中ほどに置くと iPhone の横向きで浮いて見えた。2026-11-23）
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     playButtons
-                    Spacer(minLength: 8)
-                    fromStartButton
+                    fromStartButton.padding(.leading, CardActionLayout.fromStartGap - 8)
                     Spacer(minLength: 8)
                     protectButton
                     deleteButton
@@ -660,7 +767,7 @@ struct TitleCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         playButtons
-                        fromStartButton
+                        fromStartButton.padding(.leading, CardActionLayout.fromStartGap - 8)
                     }
                     HStack(spacing: 8) {
                         Spacer(minLength: 0)
@@ -677,8 +784,18 @@ struct TitleCard: View {
         if case .actions(let actions, _) = panel {
             ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
                 let button = Button { play(action) } label: {
-                    // 三角の絵で再生と分かるので、名前は画質だけ（2026-11-21）
-                    Label(action.buttonLabel ?? action.label, systemImage: "play.fill").lineLimit(1)
+                    if action.resource.quality == TitleResource.mobileQuality {
+                        // 「モバイル」は携帯電話の絵にする（文字では間延びして見えた。2026-11-23。どの OS も）
+                        HStack(spacing: RecordingCardSymbol.mobileSpacing) {
+                            Image(systemName: "play.fill")
+                            Image(systemName: RecordingCardSymbol.mobile)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(action.buttonLabel ?? action.label)
+                    } else {
+                        // 三角の絵で再生と分かるので、名前は画質だけ（2026-11-21）
+                        Label(action.buttonLabel ?? action.label, systemImage: "play.fill").lineLimit(1)
+                    }
                 }
                 .fixedSize()
                 .disabled(playDisabledReason != nil)
@@ -692,7 +809,11 @@ struct TitleCard: View {
     @ViewBuilder
     private var fromStartButton: some View {
         if case .actions(_, let fromStart?) = panel {
-            Button(fromStart.label) { play(fromStart) }
+            Button { play(fromStart) } label: {
+                // 絵だけ（読み上げの名前は文字のまま）
+                Image(systemName: RecordingCardSymbol.fromStart)
+            }
+            .accessibilityLabel(fromStart.label)
                 .lineLimit(1).fixedSize()
                 .buttonStyle(.bordered)
                 .disabled(playDisabledReason != nil)
@@ -705,14 +826,15 @@ struct TitleCard: View {
     private var protectButton: some View {
         Button(action: toggleProtection) {
             if isChangingProtection {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(title.isProtected ? RecordingProtectionLabel.unprotectTitle : RecordingProtectionLabel.protectTitle)
-                }
+                // 回る印だけ（鍵の絵のボタンと同じ幅に近づける）
+                ProgressView().controlSize(.small)
             } else {
+                // どの OS・幅でも鍵の絵だけ（絵は今の状態。2026-11-23。名前は読み上げと説明に回す）
                 RecordingProtectionLabel(isProtected: title.isProtected)
+                    .labelStyle(.iconOnly)
             }
         }
+        .accessibilityLabel(title.isProtected ? RecordingProtectionLabel.unprotectTitle : RecordingProtectionLabel.protectTitle)
         .lineLimit(1).fixedSize()
         .buttonStyle(.bordered)
         .disabled(protectionBlocker != nil)
@@ -720,7 +842,13 @@ struct TitleCard: View {
     }
 
     private var deleteButton: some View {
-        Button("削除…", role: .destructive, action: delete)
+        Button(role: .destructive, action: delete) {
+            // ゴミ箱の絵だけ（2026-11-23。どの OS も）
+            Image(systemName: CardDeleteSymbol.name)
+        }
+        .accessibilityLabel("削除…")
+        // 鍵のボタンと同じく地のあるボタンにする（絵だけでは押せるものに見えにくい）
+        .buttonStyle(.bordered)
             .lineLimit(1).fixedSize()
             .disabled(deletionBlocker != nil)
             .help(deletionBlocker?.text ?? "この録画を削除する")

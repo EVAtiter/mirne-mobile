@@ -10,12 +10,20 @@ struct ViewerView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var overlay = ViewerOverlayState()
     @State private var window: NSWindow?
+    /// 左上の窓のボタン（閉じる）の真ん中の、窓の上端からの高さ（右上の全画面のボタンをこの高さに揃える）
+    @State private var windowButtonCenterY: CGFloat?
     @FocusState private var focused: Bool
     private let logger = Logger(subsystem: AppLog.subsystem, category: "ui")
 
     var body: some View {
         let playback = environment.playback
-        ViewerStage(overlay: overlay) { fullScreenButton }
+        ViewerStage(overlay: overlay)
+            // 全画面のボタンは右上の角（左上の窓のボタンと同じく、操作部と一緒に出し入れする。2026-11-23）
+            .overlay(alignment: .topTrailing) {
+                if overlay.controlsShown(playback.state) {
+                    fullScreenButton.transition(.opacity)
+                }
+            }
             .background(WindowAccessor(beforeShown: { environment.viewerWindow.conceal($0) }) { configure($0) })
             .onChange(of: overlay.controlsShown(playback.state)) { _, shown in setWindowButtons(visible: shown) }
             // 操作部を隠したら、全画面では、マウスを動かすまでカーソルも隠す
@@ -34,6 +42,12 @@ struct ViewerView: View {
             .focused($focused)
             // 文字だけのキーのメニューの項目は、視聴ウインドウが前にあるときだけ有効
             .focusedSceneValue(\.viewerIsKey, true)
+            // Esc で全画面を抜ける（全画面でないときは何もしない。2026-11-23）
+            .onKeyPress(.escape) {
+                guard window?.styleMask.contains(.fullScreen) == true else { return .ignored }
+                toggleFullScreen()
+                return .handled
+            }
             .onKeyPress(keys: ViewerKeys.all) { press in
                 let result = ViewerBehavior.handle(press, environment: environment, window: windowActions)
                 if result == .handled { overlay.show() }
@@ -58,13 +72,21 @@ struct ViewerView: View {
                                      resetSize: { environment.viewerWindow.resetSize() })
     }
 
-    /// 操作部の右端の全画面のボタン
+    /// 右上の角の全画面のボタン
     private var fullScreenButton: some View {
         Button(action: toggleFullScreen) {
             Image(systemName: window?.styleMask.contains(.fullScreen) == true
                   ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: ViewerFullScreenButtonLayout.size, height: ViewerFullScreenButtonLayout.size)
+                .background(.black.opacity(ViewerFullScreenButtonLayout.backgroundOpacity), in: Circle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("フルスクリーン")
         .help("フルスクリーン（F）")
+        .padding(.top, max(0, (windowButtonCenterY ?? ViewerFullScreenButtonLayout.fallbackCenterY) - ViewerFullScreenButtonLayout.size / 2))
+        .padding(.trailing, ViewerFullScreenButtonLayout.trailingPadding)
     }
 
     /// 窓を整える：タイトルバーを映像に重ね、16:9 を保つ
@@ -78,6 +100,14 @@ struct ViewerView: View {
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = .black
         setWindowButtons(visible: overlay.controlsShown(environment.playback.state))
+        windowButtonCenterY = Self.windowButtonCenterY(window)
+    }
+
+    /// 左上の閉じるボタンの真ん中の、中身の上端からの高さ（測れなければ nil）
+    static func windowButtonCenterY(_ window: NSWindow) -> CGFloat? {
+        guard let button = window.standardWindowButton(.closeButton), let content = window.contentView else { return nil }
+        let frame = button.convert(button.bounds, to: content)
+        return content.isFlipped ? frame.midY : content.bounds.height - frame.midY
     }
 
     /// 窓の左上のボタン（閉じる・しまう・拡大）を、操作部と一緒に出し入れする。
@@ -107,16 +137,46 @@ struct ViewerView: View {
     }
 }
 
+/// 右上の角の全画面のボタンの寸法（体感の値。画面で見て決める）。
+/// 高さは左上の窓のボタンの真ん中に揃える（測った値。6pt の決め打ちでは下がって見えた。2026-11-23）
+enum ViewerFullScreenButtonLayout {
+    static let size: CGFloat = 28
+    /// 窓のボタンの位置を測れないときの、真ん中の高さ
+    static let fallbackCenterY: CGFloat = 16
+    static let trailingPadding: CGFloat = 10
+    static let backgroundOpacity: Double = 0.5
+}
+
 /// 操作部の並び（macOS 版）
 enum ViewerControlsLayout {
     /// アプリの中の音量のつまみを出すか
     static let showsVolumeSlider = true
 }
 
-extension View {
-    /// 操作部のメニューの形（macOS 版：枠の無いボタン）
-    func viewerMenuStyle() -> some View {
-        menuStyle(.borderlessButton)
+/// 操作部の一覧（macOS 版：ふつうのメニュー。枠の無いボタンで、押すと AppKit のメニューが開く）
+struct ViewerChoiceMenu<Label: View>: View {
+    let choices: [ViewerChoice]
+    /// 見出しを 1 行で切るか（切らなければ見出しの幅いっぱいに出す）
+    var truncatesLabel = false
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Menu {
+            ForEach(choices) { choice in
+                Button(action: choice.action) {
+                    if choice.isSelected { SwiftUI.Label(choice.title, systemImage: "checkmark") } else { Text(choice.title) }
+                }
+                .disabled(choice.isDisabled)
+            }
+        } label: {
+            label()
+        }
+        .menuStyle(.borderlessButton)
+        // Menu は AppKit が描くので foregroundStyle(.white) が効かず、明るい外観では黒い文字になって
+        // 暗い操作部の上で見えなかった（2026-11-20）。暗い外観で描く
+        .environment(\.colorScheme, .dark)
+        .lineLimit(1)
+        .fixedSize(horizontal: !truncatesLabel, vertical: true)
     }
 }
 

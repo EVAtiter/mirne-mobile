@@ -11,19 +11,37 @@ struct ViewerView: View {
     /// 閉じる（主画面へ戻る）
     let close: () -> Void
     @State private var overlay = ViewerOverlayState()
-    /// 画面の幅（ダブルタップが左右のどちらかを決める）
-    @State private var width: CGFloat = 0
+    /// 画面の大きさ（幅はダブルタップが左右のどちらかを決める。縦横の比で操作部の並べ方を決める）
+    @State private var size: CGSize = .zero
+    /// 画面の端の安全領域（再生の画面は端まで広げるので、操作部のボタンの並びだけをこの内側に置く。
+    /// 左上の × は重ねる側で安全領域の内側に置かれる）
+    @State private var safeArea = EdgeInsets()
     @FocusState private var focused: Bool
+
+    /// 画面の幅が狭いか（局の一覧を局名だけにする幅）
+    private var isNarrow: Bool { size.width > 0 && size.width < ViewerNarrowLayout.width }
+
+    /// 操作部の並べ方（iPhone と iPad で同じ。2026-11-23）：縦長の画面（縦向き）は 2 段、横長の画面（横向き）は真ん中の物を中央に置く 1 段
+    private var controlsStyle: ViewerControlsStyle {
+        size.width < size.height ? .twoRows : .centeredRow
+    }
 
     var body: some View {
         let playback = environment.playback
-        ViewerStage(overlay: overlay) { EmptyView() }
+        ViewerStage(overlay: overlay)
+            .environment(\.viewerControlsStyle, controlsStyle)
+            .environment(\.viewerIsNarrow, isNarrow)
+            .environment(\.viewerControlsSafeArea, safeArea)
+            // 安全領域は、端まで広げる前の器で測る（ViewerStage の中は安全領域を無視している）
+            .background {
+                Color.clear.onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { safeArea = $0 }
+            }
             .overlay(alignment: .topLeading) {
                 if overlay.controlsShown(playback.state) {
                     closeButton.transition(.opacity)
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
             .contentShape(Rectangle())
             // ダブルタップ（録画だけ）：左半分で戻る・右半分で進む。1 回のタップは、ダブルタップでないと分かってから出し入れする
             .onTapGesture(count: 2, coordinateSpace: .local) { location in skip(at: location) }
@@ -74,8 +92,8 @@ struct ViewerView: View {
     /// ダブルタップで 10 秒戻る・進む（録画で、位置を変えられるときだけ）
     private func skip(at location: CGPoint) {
         let playback = environment.playback
-        guard playback.kind != .live, playback.canSeek, width > 0 else { return }
-        playback.skip(by: location.x < width / 2 ? -SeekPolicy.skipSeconds : SeekPolicy.skipSeconds)
+        guard playback.kind != .live, playback.canSeek, size.width > 0 else { return }
+        playback.skip(by: location.x < size.width / 2 ? -SeekPolicy.skipSeconds : SeekPolicy.skipSeconds)
         overlay.show()
     }
 }
@@ -87,16 +105,107 @@ enum ViewerCloseButtonLayout {
     static let backgroundOpacity: Double = 0.5
 }
 
+/// 画面が狭いかの境目（iPhone の縦向きは狭い・横向きと iPad は広い。体感の値）
+enum ViewerNarrowLayout {
+    static let width: CGFloat = 600
+}
+
 /// 操作部の並び（iPad 版）
 enum ViewerControlsLayout {
     /// アプリの中の音量のつまみを出すか（iPad は端末の音量ボタンで変えるので出さない。ミュートは残す）
     static let showsVolumeSlider = false
 }
 
-extension View {
-    /// 操作部のメニューの形（iPad 版：既定。操作部の `buttonStyle(.borderless)` で文字のボタンになる）
-    func viewerMenuStyle() -> some View {
-        self
+/// 操作部の一覧（iOS 版：自前の吹き出し）。OS のメニューは、開いている間に操作部が隠れると一緒に消えた（2026-11-23）。
+/// 吹き出しなら開いているかが分かるので、開いている間は操作部を隠さない。幅も中身に合わせられる（OS のメニューは iPad でも狭かった）
+struct ViewerChoiceMenu<Label: View>: View {
+    let choices: [ViewerChoice]
+    /// 見出しを 1 行で切るか（切らなければ見出しの幅いっぱいに出す）
+    var truncatesLabel = false
+    @ViewBuilder let label: () -> Label
+    @Environment(\.viewerOverlay) private var overlay
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented = true } label: { label() }
+            .lineLimit(1)
+            .fixedSize(horizontal: !truncatesLabel, vertical: true)
+            .popover(isPresented: $isPresented) {
+                ViewerChoiceList(choices: choices) { isPresented = false }
+                    // 暗い操作部に合わせて暗い地と外観で描く（既定の地は灰色で、白い文字が読みにくかった）
+                    .environment(\.colorScheme, .dark)
+                    .presentationBackground(ViewerChoiceLayout.background)
+                    // iPhone でもシートにせず吹き出しで出す
+                    .presentationCompactAdaptation(.popover)
+            }
+            .onChange(of: isPresented) { _, shown in
+                if shown { overlay?.hold() } else { overlay?.release() }
+            }
+    }
+}
+
+/// 吹き出しの中の一覧（選んでいる項目に印。押したら選んで閉じる）
+private struct ViewerChoiceList: View {
+    let choices: [ViewerChoice]
+    let dismiss: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
+                    if index > 0 { Divider() }
+                    Button {
+                        choice.action()
+                        dismiss()
+                    } label: {
+                        HStack(spacing: ViewerChoiceLayout.checkmarkSpacing) {
+                            Image(systemName: "checkmark")
+                                .fontWeight(.semibold)
+                                .opacity(choice.isSelected ? 1 : 0)
+                            Text(choice.title).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, ViewerChoiceLayout.horizontalPadding)
+                        .padding(.vertical, ViewerChoiceLayout.verticalPadding)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(choice.isDisabled ? .secondary : .primary)
+                    .disabled(choice.isDisabled)
+                }
+            }
+        }
+        .scrollFitsContentHeight(maxHeight: ViewerChoiceLayout.maxHeight)
+        .modifier(CappedIdealWidth(maxWidth: ViewerChoiceLayout.maxWidth))
+    }
+}
+
+/// 吹き出しの一覧の寸法（体感の値。画面で見て決める）
+enum ViewerChoiceLayout {
+    /// 一覧の幅の上限（局名と放送中の番組名が 1 行に入る幅。画面より広いときは OS が詰める）
+    static let maxWidth: CGFloat = 440
+    /// 一覧の高さの上限（越えたらスクロール）
+    static let maxHeight: CGFloat = 480
+    static let horizontalPadding: CGFloat = 16
+    static let verticalPadding: CGFloat = 11
+    static let checkmarkSpacing: CGFloat = 10
+    /// 吹き出しの地（暗い操作部に合わせる）
+    static let background = Color(white: 0.16)
+}
+
+/// 幅を中身の幅（上限つき）にする（吹き出しは中身の幅で開くので、長い行で画面いっぱいに広がらないようにする）
+private struct CappedIdealWidth: ViewModifier {
+    let maxWidth: CGFloat
+    @State private var idealWidth: CGFloat?
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                // 中身の本来の幅を、上限なしで測る（見えない写しで測る）
+                content.fixedSize().hidden()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { idealWidth = $0 }
+            }
+            .frame(width: idealWidth.map { min($0, maxWidth) })
     }
 }
 

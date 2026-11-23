@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+/// 各画面の上の帯の OS ごとの決まり（macOS 版）
+enum ScreenActionBarPlatform {
+    /// 帯の段の高さを、いちばん高い部品の見本で揃えるか（macOS 版：揃えるかを決めていないので今のまま）
+    static let alignsRowHeight = false
+}
+
 extension BarStatusText {
     /// SwiftUI の部品の大きさを AppKit の大きさへ
     static func appKitSize(_ size: ControlSize) -> NSControl.ControlSize {
