@@ -28,6 +28,23 @@ public struct HDDEntry: Sendable, Equatable {
     public var isInternal: Bool
     public var isMounted: Bool
     public var isRegistered: Bool
+
+    public init(id: Int, isInternal: Bool, isMounted: Bool, isRegistered: Bool) {
+        self.id = id
+        self.isInternal = isInternal
+        self.isMounted = isMounted
+        self.isRegistered = isRegistered
+    }
+
+    /// 使える状態か（マウントされていて登録されている）。そうでない HDD は `HDDInfoGet` が失敗するので、詳細を頼まない
+    /// （torne mobile HB `c5b5881` の SIE 製の実測。公式の画面も「未接続」と出す）
+    public var isConnected: Bool { isMounted && isRegistered }
+}
+
+/// HDD の番号の決まり
+public enum HDDIdentity {
+    /// 内蔵の HDD の番号（`status/HDDListGet` の `id`。ほかの番号は外付け）
+    public static let internalID = 0
 }
 
 /// `status/HDDInfoGet`（大きさはバイト）。serialNumber は機器を特定できるので持たない
@@ -186,18 +203,20 @@ public struct WebAPIDeviceInfoService: Sendable {
                           updateExists: update.flag("existFlag"))
     }
 
-    /// 内蔵の HDD か。**`internalFlag` は名前と逆で、内蔵が 0・外付けが 1**（torne mobile HB §89.8 の SIE 製の実測〔内蔵 id 0 が 0・
-    /// 外付け id 1 が 1〕と、こちらの Buffalo 製〔内蔵だけで 0。2026-11-21 に「情報」の画面が「外付け HDD」と出て分かった〕が合う）
-    static func isInternalDisk(_ hdd: JSONObject) -> Bool {
-        !hdd.flag("internalFlag")
+    /// 内蔵の HDD か。**`id` で見分ける（0 が内蔵・ほかは外付け）**。`internalFlag` は名前と逆（内蔵が 0・外付けが 1）なので使わない
+    /// （torne mobile HB §89.8 の SIE 製の実測〔内蔵 id 0 が 0・外付け id 1 が 1〕と、こちらの Buffalo 製〔内蔵だけで 0。2026-11-21 に
+    /// 「情報」の画面が「外付け HDD」と出て分かった〕。作者も 2026-11-22 に `id` で見分ける形に改めた〔`c5b5881`〕）
+    static func isInternalDisk(id: Int) -> Bool {
+        id == HDDIdentity.internalID
     }
 
     public func hddList() async throws -> [HDDEntry] {
         let json = try await transport.getJSON(endpoints.hddListGet)
         let source = "webapi:\(endpoints.hddListGet.path)"
         return try json.objects("HDD").map {
-            HDDEntry(id: try $0.requiredInt("id", source: source), isInternal: Self.isInternalDisk($0),
-                     isMounted: ($0.int("mountStatus") ?? 0) != 0, isRegistered: $0.flag("registerFlag"))
+            let id = try $0.requiredInt("id", source: source)
+            return HDDEntry(id: id, isInternal: Self.isInternalDisk(id: id),
+                            isMounted: ($0.int("mountStatus") ?? 0) != 0, isRegistered: $0.flag("registerFlag"))
         }
     }
 
@@ -209,7 +228,8 @@ public struct WebAPIDeviceInfoService: Sendable {
             guard let number = hdd.values[key] as? NSNumber else { throw NasneError.parse(source, "\"\(key)\" が無い") }
             return number.int64Value
         }
-        return HDDInfo(id: try hdd.requiredInt("id", source: source), isInternal: Self.isInternalDisk(hdd),
+        let id = try hdd.requiredInt("id", source: source)
+        return HDDInfo(id: id, isInternal: Self.isInternalDisk(id: id),
                        format: hdd.string("format") ?? "", name: hdd.string("name") ?? "",
                        usedBytes: try bytes("usedVolumeSize"), freeBytes: try bytes("freeVolumeSize"),
                        totalBytes: try bytes("totalVolumeSize"))

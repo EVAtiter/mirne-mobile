@@ -24,8 +24,8 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
     # 版とビルド番号はここだけに書く（Info.plist は $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) で参照する）
-    MARKETING_VERSION: "1.2.0"
-    CURRENT_PROJECT_VERSION: "11"
+    MARKETING_VERSION: "1.3.0"
+    CURRENT_PROJECT_VERSION: "12"
   configs:
     # xcodegen は #if DEBUG 用の DEBUG を自動定義しないので明示する
     Debug:
@@ -115,6 +115,9 @@ targets:
           - "**/.DS_Store"
           # Info.plist は INFOPLIST_FILE で参照するのでリソースコピーから外す
           - "Info.plist"
+      # 設定の「このアプリについて」で読む NOTICE（受け継いだソースの一覧と許諾）
+      - path: NOTICE
+        buildPhase: resources
     configFiles:
       Debug: Config/Base.xcconfig
       Release: Config/Base.xcconfig

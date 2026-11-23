@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// 主ウィンドウ（登録した後）。ツールバーの中央の切り替えで「番組表」「予約」「録画」「情報」を切り替える（2026-11-20 にサイドバーをやめた）。
-/// 「ライブ」は切り替えの左、「設定」は右端の別のボタン。設定は主ウィンドウの上にシートで開く（2026-11-20 に決めた）。
-/// 選んだ項目は保存し、起動し直したときはその項目を開く（2026-11-20。初めて・保存した項目が無いとき・前に「設定」を保存していたときは「情報」）。
-/// iPad の主画面も同じ形。iPhone の縦向きなど狭い幅では、切り替えを画面の下のタブバーにし、「ライブ」「設定」はシンボルだけにする（2026-11-23）
+/// 主ウィンドウ（登録した後）。Mac・iPad・iPhone で同じ形（2026-11-23）：
+/// 上端に画面の名前だけ（Mac は窓のタイトル・iPhone の縦向きはナビゲーションの帯。iPad の広い幅は上の帯を出さない。
+/// iPhone の横向きは上の帯を隠し、名前を各画面の帯の中央に出す）、
+/// 各画面の帯の右端に「ライブ」「設定」（iPhone の縦向き・iPad の狭い分割は上の帯の右端）、下端に「番組表」「予約」「録画」「情報」の切り替え（`MainTabContainer`。OS ごと）。
+/// 設定は主ウィンドウの上にシートで開く（2026-11-20 に決めた）。
+/// 選んだ項目は保存し、起動し直したときはその項目を開く（2026-11-20。初めて・保存した項目が無いとき・前に「設定」を保存していたときは「情報」）
 struct MainView: View {
     @Environment(AppEnvironment.self) private var environment
     let services: NasneServices
@@ -15,7 +17,7 @@ struct MainView: View {
     @State private var showsSettings = false
     /// 文字の大きさ（番組表の寸法に掛け、変わったら番組表を作り直す）
     @AppStorage(MainWindowSettingsKey.textSize) private var textSize = MainTextSize.initial.rawValue
-    /// 中身の幅（足りなければ「ライブ」「設定」の文字を省く）
+    /// 中身の幅（足りなければ「ライブ」「設定」の文字を省く。狭い幅の番組表の列の幅にも使う）
     @State private var contentWidth: CGFloat = MainWindowLayout.defaultSize.width
     @State private var info: InfoModel
     @State private var recordings: RecordingsModel
@@ -40,14 +42,14 @@ struct MainView: View {
     }
 
     var body: some View {
-        // 切り替えの置き場（iPhone の縦向きなど狭い幅では下のタブバー。それ以外は帯の中央）
-        MainSectionPlacementReader { placement in
-            mainBody(placement)
+        // 上の帯を出すか・狭い幅の形にするか（OS と画面の大きさで決める）
+        MainLayoutReader { layout in
+            mainBody(layout)
         }
     }
 
-    private func mainBody(_ placement: MainSectionPlacement) -> some View {
-        sections(placement)
+    private func mainBody(_ layout: MainLayout) -> some View {
+        sections(layout)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onChange(of: stateNotices) { environment.notices.forgetDismissed(notIn: stateNotices) }
             // 録画一覧は起動したときから読む（録画の画面を開くのを待たない。2026-11-21）
@@ -56,33 +58,6 @@ struct MainView: View {
             .onChange(of: showsSubchannels) { lineup.showsSubchannels = showsSubchannels }
             .environment(logoImages)
             .onChange(of: environment.channelLogos?.revision, initial: true) { logoImages.update(from: environment.channelLogos) }
-            .toolbar {
-                // 中央の切り替え。シンボルと文字（窓が狭いときはシンボルだけ）。下のタブバーのときは出さない
-                if placement == .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        MainSectionPicker(selection: $selection, showsTitles: showsToolbarTitles(placement))
-                            .fixedSize()
-                            // 文字の有無が変わったら作り直す（ツールバーが項目の背景の大きさを測り直すように）
-                            .id(showsToolbarTitles(placement))
-                    }
-                }
-                // ライブと設定：右端に 1 つのまとまりで並べる（「ライブ」は前は切り替えの左。
-                // 2026-11-21 に「設定」の左へ移した）。各画面の操作は画面の上の帯にある
-                ToolbarItemGroup(placement: .primaryAction) {
-                    if let watchLive {
-                        Button { watchLive(nil) } label: { Label("ライブ", systemImage: LiveSymbol.watch) }
-                            .labelStyle(toolbarLabelStyle(placement))
-                            .help("ライブで見る（前に見た局）")
-                            .disabled(environment.live == nil)
-                            // 文字の有無が変わったら作り直す（作り直さないと、窓を広げても文字が戻らなかった）
-                            .id(showsToolbarTitles(placement))
-                    }
-                    Button { showsSettings = true } label: { Label("設定", systemImage: MainToolbarSymbol.settings) }
-                        .labelStyle(toolbarLabelStyle(placement))
-                        .help("設定を開く")
-                        .id(showsToolbarTitles(placement))
-                }
-            }
             .sheet(isPresented: $showsSettings) {
                 SettingsSheet(services: services, credentials: credentials) { showsSettings = false }
             }
@@ -97,62 +72,60 @@ struct MainView: View {
             }
     }
 
-    /// ツールバーの項目に文字も出すか。窓の幅が足りないときと、下のタブバーのとき（狭い幅）は「ライブ」「設定」をシンボルだけにする
-    private func showsToolbarTitles(_ placement: MainSectionPlacement) -> Bool {
-        placement == .toolbar && contentWidth >= MainWindowLayout.compactToolbarWidth
-    }
-
-    private func toolbarLabelStyle(_ placement: MainSectionPlacement) -> AnyLabelStyle {
-        showsToolbarTitles(placement) ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly)
-    }
-
-    /// 画面の中身と下端の知らせの帯。下のタブバーのときは、画面ごとのタブに分け、帯は各タブの中（タブバーの上）に置く
-    @ViewBuilder
-    private func sections(_ placement: MainSectionPlacement) -> some View {
-        switch placement {
-        case .toolbar:
-            VStack(spacing: 0) {
-                content(selection, placement: placement)
-                noticeBar
-            }
-        case .tabBar, .tabBarWithoutNavigationBar:
-            TabView(selection: $selection) {
-                ForEach(MainSection.allCases) { section in
-                    Tab(section.title, systemImage: section.symbol, value: section) {
-                        VStack(spacing: 0) {
-                            content(section, placement: placement)
-                            noticeBar
-                        }
-                        // ナビゲーションの帯を隠すときは、画面の名前を各画面の帯の中央に出す（録画は検索の欄で幅が足りないので出さない。2026-11-23）
-                        .environment(\.mainBarTitle, placement == .tabBarWithoutNavigationBar && section != .recordings ? section.title : nil)
+    /// 画面の中身と知らせを、切り替えの器（OS ごと）に入れる。知らせは切り替えのすぐ上に浮かべる
+    private func sections(_ layout: MainLayout) -> some View {
+        // 知らせは切り替えのすぐ上に浮かべる板（置き場所は器が決める）
+        MainTabContainer(selection: $selection) {
+            noticeBar
+        } content: { section in
+            content(section, layout: layout)
+            // iPhone の横向きは、画面の名前を各画面の帯の中央に出す（録画は検索の欄で幅が足りないので出さない。2026-11-23）
+            .environment(\.mainBarTitle, layout.showsBarTitle && section != .recordings ? section.title : nil)
+        }
+        // 上端（Mac は窓のタイトル）に今の画面の名前
+        .navigationTitle(selection.title)
+        // 狭い幅では各画面を狭い形で出す（帯のボタンを絵だけ・行を短く・カードをシートに）
+        .environment(\.usesCompactLayout, layout.usesCompactLayout)
+        // iPad の広い幅と iPhone の横向きは上の帯を隠す（各画面の帯の上の余白を戻す）
+        .hidesNavigationBar(!layout.showsTitleBar)
+        .environment(\.mainTitleBarHidden, !layout.showsTitleBar)
+        // 「ライブ」「設定」は各画面の帯の右端に出す（iOS で上の帯を出すときは、上の帯の右端）
+        .environment(\.mainBarAccessories, layout.showsAccessoriesInTitleBar ? nil : barAccessories(layout))
+        .toolbar {
+            if layout.showsAccessoriesInTitleBar {
+                // ボタンの丸い板は上の帯が付ける（各画面の帯の部品は自分で板を付けるので使わない）
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if let watchLive {
+                        Button { watchLive(nil) } label: { Label("ライブ", systemImage: LiveSymbol.watch) }
+                            .labelStyle(.iconOnly)
+                            .help("ライブで見る（前に見た局）")
+                            .disabled(environment.live == nil)
                     }
+                    Button { showsSettings = true } label: { Label("設定", systemImage: MainToolbarSymbol.settings) }
+                        .labelStyle(.iconOnly)
+                        .help("設定を開く")
                 }
             }
-            // 帯の中央に今の画面の名前
-            .navigationTitle(selection.title)
-            // 各画面を狭い幅の形で出す（帯のボタンを絵だけ・行を短く・カードをシートに）
-            .environment(\.usesCompactLayout, true)
-            // 横向きはナビゲーションの帯を隠し、「ライブ」「設定」を各画面の帯の右端に出す
-            .hidesNavigationBar(placement == .tabBarWithoutNavigationBar)
-            .environment(\.mainBarAccessories, placement == .tabBarWithoutNavigationBar ? barAccessories : nil)
         }
     }
 
-    /// 各画面の帯の右端に出す「ライブ」「設定」（ナビゲーションの帯を隠すとき）
-    private var barAccessories: MainBarAccessories {
+    /// 各画面の帯の右端に出す「ライブ」「設定」。Mac は広い窓なら絵と文字、それ以外は絵だけ（iPad・iPhone はいつも絵だけ。
+    /// `MainWindowLayout.accessoryTitlesWidth` は OS ごと）
+    private func barAccessories(_ layout: MainLayout) -> MainBarAccessories {
         MainBarAccessories(watchLive: watchLive.map { watch in { watch(nil) } },
                            liveDisabled: environment.live == nil,
-                           openSettings: { showsSettings = true })
+                           openSettings: { showsSettings = true },
+                           showsTitles: !layout.usesCompactLayout && contentWidth >= MainWindowLayout.accessoryTitlesWidth)
     }
 
-    /// 知らせの帯（読み込み中・誤り・操作の結果。全部の画面のものをここに出す）。窓の下端に置く（2026-11-21。前は上）
+    /// 知らせ（読み込み中・誤り・操作の結果。全部の画面のものをここに出す）。切り替えのすぐ上に浮かべる板（2026-11-23。前は窓の下端の帯）
     private var noticeBar: some View {
         MainNoticeBar(notices: environment.notices.visible(state: stateNotices),
                       perform: perform(_:), dismiss: { environment.notices.dismiss($0) })
     }
 
     @ViewBuilder
-    private func content(_ section: MainSection, placement: MainSectionPlacement) -> some View {
+    private func content(_ section: MainSection, layout: MainLayout) -> some View {
         switch section {
         case .info: InfoView(model: info)
         case .recordings: RecordingsView(model: recordings, openViewer: openViewer)
@@ -161,7 +134,7 @@ struct MainView: View {
             if let guide = environment.programGuide {
                 // 狭い幅では時刻の列を詰め、局の列を画面の幅に 2 局収まる幅にする
                 let sizing = GuideLayout.apply(textScale: MainTextSize.saved(textSize).scale,
-                                               compactWidth: placement.usesTabBar ? contentWidth : nil)
+                                               compactWidth: layout.usesCompactLayout ? contentWidth : nil)
                 GuideView(guide: guide, lineup: lineup,
                           scheduling: GuideScheduling(service: services.schedules, schedules: schedules) { Task { await schedules.reload() } },
                           live: guideLive,
@@ -243,7 +216,7 @@ enum LiveSymbol {
     static let watch = "play.tv"
 }
 
-/// 主ウィンドウのツールバーの記号
+/// 主画面の「設定」の記号（各画面の帯の右端）
 enum MainToolbarSymbol {
     static let settings = "gearshape"
 }
@@ -259,21 +232,21 @@ struct AnyLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View { make(configuration) }
 }
 
-/// 主画面の切り替えの置き場（OS と画面の幅で決める。`MainSectionPlacementReader`）
-enum MainSectionPlacement {
-    /// ツールバー（ナビゲーションの帯）の中央の切り替え（macOS・iPad の広い幅）
-    case toolbar
-    /// 画面の下のタブバー（iPhone の縦向きなど狭い幅）
-    case tabBar
-    /// 画面の下のタブバーで、ナビゲーションの帯を隠す（iPhone の横向き。縦が狭いので、ナビゲーションの帯と各画面の帯の 2 段を 1 段にする。
-    /// 「ライブ」「設定」は各画面の帯の右端に出す。2026-11-23）
-    case tabBarWithoutNavigationBar
-
-    /// 下のタブバーか
-    var usesTabBar: Bool { self != .toolbar }
+/// 主画面の形（OS と画面の大きさで決める。`MainLayoutReader`。2026-11-23 に、切り替えの置き場から、互いに関わらない 2 つに分けた）
+struct MainLayout: Equatable {
+    /// 上の帯（画面の名前）を出すか。出さないのは iPad の広い幅（名前は要らない。2026-11-23）と、
+    /// iPhone の横向き（縦が狭いので、上の帯と各画面の帯の 2 段を 1 段にする）
+    let showsTitleBar: Bool
+    /// 各画面の帯の中央に画面の名前を出すか（iPhone の横向きだけ。上の帯の代わり）
+    let showsBarTitle: Bool
+    /// 各画面を狭い幅の形にするか（iPhone と iPad の狭い分割。帯のボタンを絵だけ・行を短く・カードをシートに）
+    let usesCompactLayout: Bool
+    /// 「ライブ」「設定」を上の帯（ナビゲーションの帯）の右端に出すか。iOS で上の帯を出すとき（iPhone の縦向き・iPad の狭い分割）。
+    /// 各画面の帯に入れると幅が足りず、帯が画面からはみ出したため（2026-11-23）。Mac は窓のタイトルの帯に置かず、各画面の帯の右端
+    let showsAccessoriesInTitleBar: Bool
 }
 
-/// 中央の切り替えの項目（並びはこの順）。「設定」は 2026-11-20 に切り替えから外した（前に保存した "settings" は知らない値として「情報」になる）
+/// 下の切り替えの項目（並びはこの順）。「設定」は 2026-11-20 に切り替えから外した（前に保存した "settings" は知らない値として「情報」になる）
 enum MainSection: String, CaseIterable, Identifiable {
     case guide, schedules, recordings, info
 

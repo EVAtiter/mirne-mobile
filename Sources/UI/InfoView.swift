@@ -107,7 +107,7 @@ struct InfoView: View {
                 Spacer()
                 if let free = hdd.freeBytes, let total = hdd.totalBytes {
                     Text("空き \(Self.bytes(free)) / \(Self.bytes(total))").foregroundStyle(.secondary)
-                } else if !hdd.isMounted {
+                } else if !hdd.isConnected {
                     Text("つながっていません").foregroundStyle(.secondary)
                 }
             }

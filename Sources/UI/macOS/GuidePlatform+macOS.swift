@@ -14,6 +14,11 @@ extension View {
         onContinuousHover(perform: action)
     }
 
+    /// 斜めのスワイプでも自由に動かす（macOS 版）。スクロールの中身に置く
+    func guideFreeScrolling() -> some View {
+        background(FreeAxisScrolling())
+    }
+
     /// 吹き出しの窓がスクロールの操作を受けたら知らせる
     func popoverScrollWatcher(_ onScroll: @escaping () -> Void) -> some View {
         background(PopoverScrollWatcher(onScroll: onScroll))
@@ -36,6 +41,50 @@ private struct GuideTrailingScrollerInset: ViewModifier {
     /// `NSScroller` は main actor の上でしか読めないので、これも main actor に置く（画面の中からしか読まない）
     @MainActor static func inset(scrollerStyle: NSScroller.Style) -> CGFloat {
         scrollerStyle == .overlay ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+    }
+}
+
+/// 包んでいる `NSScrollView` の、1 回のスワイプを縦か横の強いほうに絞る働き（`usesPredominantAxisScrolling`。既定で入）を切る。
+/// 切らないと、斜めに払っても縦か横の一方にしか動かない（iPad・iPhone の OS のスクロールは元から絞らない。2026-11-23）。
+/// トラックパッドの 2 本指と Magic Mouse の 1 本指のスワイプは、どちらもスクロールの事象で届くので、これ 1 つで両方に効く。
+/// SwiftUI の ScrollView からは設定できないので、中身に置いた見えない view から包んでいるスクロールの部品を探す
+private struct FreeAxisScrolling: NSViewRepresentable {
+    func makeNSView(context: Context) -> FreeAxisScrollingView { FreeAxisScrollingView() }
+    func updateNSView(_ view: FreeAxisScrollingView, context: Context) {}
+}
+
+private final class FreeAxisScrollingView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        // 窓に載った直後は、まだスクロールの部品の中に組み込まれていないことがあるので、次の回にも見る
+        apply()
+        DispatchQueue.main.async { [weak self] in self?.apply() }
+    }
+
+    private func apply() {
+        enclosingScrollView?.usesPredominantAxisScrolling = false
+    }
+
+    /// 押す・置く操作は下の番組の欄へ通す
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// 番組表の帯の前後の日のボタン（macOS 版：ひと続きの部品 `ControlGroup`）
+struct GuideDaySteppers: View {
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let move: (Int) -> Void
+
+    var body: some View {
+        ControlGroup {
+            Button("前の日", systemImage: "chevron.left") { move(-1) }
+                .disabled(!canGoBack)
+            Button("次の日", systemImage: "chevron.right") { move(1) }
+                .disabled(!canGoForward)
+        }
+        .labelStyle(.iconOnly)
+        .fixedSize()
     }
 }
 

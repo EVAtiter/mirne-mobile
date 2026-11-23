@@ -45,7 +45,8 @@ public struct DeviceSummary: Sendable, Equatable {
 public struct HDDSummary: Sendable, Equatable, Identifiable {
     public var id: Int
     public var isInternal: Bool
-    public var isMounted: Bool
+    /// 使える状態か（マウントされていて登録されている。そうでなければ「つながっていません」と出す）
+    public var isConnected: Bool
     public var totalBytes: Int64?
     public var usedBytes: Int64?
     public var freeBytes: Int64?
@@ -149,8 +150,9 @@ public final class InfoModel {
     nonisolated static func loadHDDs(_ services: NasneServices) async throws -> [HDDSummary] {
         var summaries: [HDDSummary] = []
         for entry in try await services.deviceInfo.hddList() {
-            var summary = HDDSummary(id: entry.id, isInternal: entry.isInternal, isMounted: entry.isMounted)
-            if entry.isMounted, let info = try? await services.deviceInfo.hddInfo(id: entry.id) {
+            var summary = HDDSummary(id: entry.id, isInternal: entry.isInternal, isConnected: entry.isConnected)
+            // マウントされていない・登録されていない HDD は詳細が取れない（頼むと失敗する）ので頼まない
+            if entry.isConnected, let info = try? await services.deviceInfo.hddInfo(id: entry.id) {
                 summary.totalBytes = info.totalBytes
                 summary.usedBytes = info.usedBytes
                 summary.freeBytes = info.freeBytes

@@ -20,7 +20,7 @@ DTCP-IP or other technologies, and it gives no warranty of non-infringement.
 
 ## Features
 
-- **Program guide (番組表)**: shows the nasne's digital terrestrial program guide for 8 days, with station logos. Scheduled programs are marked. Click a program for its details and schedule a recording from there
+- **Program guide (番組表)**: shows the nasne's digital terrestrial program guide for 8 days, with station logos. Scheduled programs are marked. Click a program for its details and schedule a recording from there. On the Mac, swipe on a trackpad or Magic Mouse to move it diagonally as well
 - **Schedules (予約)**: list, create (by station and time, or from a program in the guide), change the quality of, and delete recording schedules. Overlapping schedules are checked before creating one. Each row starts with the station logo, and the selected schedule is shown in an information card
 - **Recordings (録画)**: search, sort, and group recordings by title. Each row starts with the station logo, and the viewing state (unplayed, in progress, finished) is shown with a mark and a light row color. The selected recording is shown in a card with its information and buttons to play, protect, and delete it. The previous list appears at once and is brought up to date with the nasne in about a second
   - An unfinished recording resumes where you left off. The position is also saved on the nasne and shared with other Macs, iPhones, iPads, and torne (can be turned off in Settings)
@@ -32,9 +32,10 @@ DTCP-IP or other technologies, and it gives no warranty of non-infringement.
   - Full screen, always on top, and back to the standard size
 - **Live viewing (ライブ)**: watch what is on the air. Change stations from the menu in the controls, ↑↓, or the number keys. While the nasne is recording, live viewing starts on the station being recorded
 - **Info (情報)**: shows the nasne itself, free HDD space, programs being recorded, notices, and schedules that failed to record
-- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep
+- **Switching screens**: switch between Program guide, Schedules, Recordings, and Info with the tabs floating at the bottom of the window (screen). Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float just above the tabs
+- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
 - **iPhone and iPad**: the same program guide, schedules, recordings, info, playback, and live viewing. Tap a recording or schedule to select it and show its card, and double-tap a recording to play it. Playback covers the whole screen; tap to show the controls, and double-tap the left or right half to go 10 seconds back or forward (recordings). Playback stops when the app goes to the background and resumes from the same position when you come back
-  - On a narrow screen such as an iPhone in portrait, switch screens with the tabs at the bottom, and the card of the selected recording or schedule opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
+  - On a narrow screen such as an iPhone in portrait, the card of the selected recording or schedule opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
 
 ## Installation
 
@@ -73,9 +74,9 @@ The same Release also has the source code of FFmpeg that the iPhone and iPad ver
    Credentials (資格情報（DTCP-IP）), choose the two files of a certificate and private key obtained from
    your own device (a `credentials.env` file also works). The program guide, schedules, and recording
    list work without credentials
-3. **Watch**: switch between Program guide, Schedules, Recordings, and Info in the middle of the toolbar.
+3. **Watch**: switch between Program guide, Schedules, Recordings, and Info with the tabs at the bottom of the window.
    Select a recording and press a play button in its card, or double-click its row or press Return. Start live viewing
-   with Live (ライブ) in the toolbar or the button next to a station name in the program guide
+   with Live (ライブ) at the right end of the bar at the top of the screen or the button next to a station name in the program guide
 
 Main keys in the viewer window:
 
@@ -104,8 +105,8 @@ On the iPhone and iPad:
   scans the network (the iPhone and iPad version does not use SSDP). Allow it; if you denied it, allow
   mirne mobile in Settings → Privacy & Security → Local Network
 - Import the credential files from the Files app
-- On a narrow screen, switch between Program guide (番組表), Schedules (予約), Recordings (録画), and Info (情報) with
-  the tabs at the bottom of the screen
+- When the screen name is shown at the top, as on an iPhone in portrait, Live (ライブ) and Settings (設定) are at
+  its right end
 - In the playback screen, tap to show or hide the controls and close it with × at the top left. The
   volume follows the device's volume buttons. With a hardware keyboard, the keys above work, except F,
   Esc, T, and ⌘0

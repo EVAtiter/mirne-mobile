@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// 前は「更新」をツールバーの右端（「設定」の右）に、録画の検索・絞り込みと予約の「新規予約」を一覧の上の帯に置いていたが、
 /// 番組表だけ「更新」が画面の上の帯にあって揃っていなかった。番組表に合わせて、予約・録画・情報にも同じ帯を置き、
-/// 「更新」と画面の操作をそこに集めた（2026-11-21）。ツールバーには「ライブ」・切り替え・「設定」だけが残る
+/// 「更新」と画面の操作をそこに集めた（2026-11-21）。右端には「ライブ」「設定」も置く（2026-11-23 から。iPhone の縦向き・iPad の狭い分割は上の帯の右端）
 struct ScreenActionBar<Leading: View>: View {
     /// 「更新」のボタンの説明（マウスを載せると出す）
     let refreshHelp: String
@@ -15,7 +15,7 @@ struct ScreenActionBar<Leading: View>: View {
     var status: String? = nil
     @ViewBuilder let leading: Leading
 
-    /// 帯の中央に出す画面の名前（ナビゲーションの帯を隠しているとき。主画面が配る）
+    /// 帯の中央に出す画面の名前（上の帯を隠しているとき。主画面が配る）
     @Environment(\.mainBarTitle) private var title
 
     var body: some View {
@@ -83,6 +83,8 @@ struct ScreenRefreshButton: View {
     var body: some View {
         Button("更新", systemImage: "arrow.clockwise", action: action)
             .labelStyle(.iconOnly)
+            // iOS はナビゲーションの帯のボタンと同じ形（OS ごと）
+            .barButtonChrome()
             .disabled(isRefreshing)
             .help(help)
     }
@@ -133,19 +135,24 @@ struct ScreenActionBarRow: Layout {
     }
 }
 
-/// 各画面の帯の右端に出す主画面の操作（iPhone の横向きでナビゲーションの帯を隠すとき。帯があるときは nil）
+/// 各画面の帯の右端に出す主画面の操作（「ライブ」「設定」。2026-11-23 から Mac・iPad の広い幅・iPhone の横向きで出す。
+/// iPhone の縦向き・iPad の狭い分割は、各画面の帯では幅が足りないので上の帯〔ナビゲーションの帯〕の右端に出し、これは配らない）
 struct MainBarAccessories {
     /// ライブで見る（前に見た局）。視聴の画面を開けなければ nil
     let watchLive: (() -> Void)?
     let liveDisabled: Bool
     let openSettings: () -> Void
+    /// 文字も出すか（Mac の広い窓のとき。それ以外は絵だけ）
+    var showsTitles = false
 }
 
 extension EnvironmentValues {
-    /// 各画面の帯の右端に出す「ライブ」「設定」（ナビゲーションの帯を隠しているときだけ。主画面が配る）
+    /// 各画面の帯の右端に出す「ライブ」「設定」（主画面が配る。主画面の外〔番組表のウインドウなど〕では無い）
     @Entry var mainBarAccessories: MainBarAccessories? = nil
-    /// 各画面の帯の中央に出す画面の名前（ナビゲーションの帯を隠しているときだけ。録画は検索の欄で幅が足りないので出さない。主画面が配る）
+    /// 各画面の帯の中央に出す画面の名前（上の帯を隠しているときだけ。録画は検索の欄で幅が足りないので出さない。主画面が配る）
     @Entry var mainBarTitle: String? = nil
+    /// 上の帯（画面の名前）を隠しているか（iPad の広い幅と iPhone の横向き。各画面の帯が画面の上端に来るので、上の余白を詰めない。主画面が配る）
+    @Entry var mainTitleBarHidden = false
 }
 
 /// 帯の中央の画面の名前（ナビゲーションの帯の名前と同じ形）
@@ -160,7 +167,7 @@ struct MainBarTitle: View {
     }
 }
 
-/// 帯の右端の「ライブ」「設定」（絵だけ。ナビゲーションの帯の同じボタンの代わり）
+/// 帯の右端の「ライブ」「設定」（Mac の広い窓なら絵と文字、それ以外は絵だけ）
 struct MainBarAccessoryButtons: View {
     @Environment(\.mainBarAccessories) private var accessories
 
@@ -175,7 +182,9 @@ struct MainBarAccessoryButtons: View {
                 Button(action: accessories.openSettings) { Label("設定", systemImage: MainToolbarSymbol.settings) }
                     .help("設定を開く")
             }
-            .labelStyle(.iconOnly)
+            .labelStyle(accessories.showsTitles ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly))
+            // iOS は 1 つの丸い板にまとめる（ナビゲーションの帯のボタンのまとまりと同じ形。OS ごと）
+            .barButtonGroupChrome()
         }
     }
 }
@@ -261,8 +270,8 @@ extension View {
 
 private struct ScreenActionBarPadding: ViewModifier {
     @Environment(\.usesCompactLayout) private var compact
-    /// ナビゲーションの帯を隠しているか（帯が画面の上端に来るので、上の余白を詰めない）
-    @Environment(\.mainBarAccessories) private var accessories
+    /// 上の帯を隠しているか（帯が画面の上端に来るので、上の余白を詰めない）
+    @Environment(\.mainTitleBarHidden) private var titleBarHidden
 
     func body(content: Content) -> some View {
         HStack(spacing: 0) {
@@ -272,7 +281,9 @@ private struct ScreenActionBarPadding: ViewModifier {
         }
             .frame(minHeight: compact ? ScreenActionBarLayout.compactRowHeight : nil)
             .padding(.horizontal, ScreenActionBarLayout.horizontalPadding)
-            .padding(.top, compact && accessories == nil ? ScreenActionBarLayout.compactTopPadding : ScreenActionBarLayout.verticalPadding)
+            // iPadOS の窓の左上の角（窓を操作するボタンの場所）を避ける（OS ごと）
+            .avoidsWindowControls()
+            .padding(.top, compact && !titleBarHidden ? ScreenActionBarLayout.compactTopPadding : ScreenActionBarLayout.verticalPadding)
             .padding(.bottom, ScreenActionBarLayout.verticalPadding)
     }
 }

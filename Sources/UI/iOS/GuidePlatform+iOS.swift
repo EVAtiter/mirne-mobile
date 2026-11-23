@@ -14,9 +14,34 @@ extension View {
         self
     }
 
+    /// 斜めのスワイプでも自由に動かす（iOS 版：OS のスクロールは元から向きを絞らないので何もしない）
+    func guideFreeScrolling() -> some View {
+        self
+    }
+
     /// 吹き出しの窓がスクロールの操作を受けたら知らせる（iPad 版：吹き出しを出さないので見張らない）
     func popoverScrollWatcher(_ onScroll: @escaping () -> Void) -> some View {
         self
+    }
+}
+
+/// 番組表の帯の前後の日のボタン（iOS 版）：ふつうのボタン 2 つを、帯のほかのボタンと同じ丸い板にまとめる。
+/// macOS と同じ `ControlGroup` は、上の帯を出さない iPad の帯で押しても動かなかった（日付のメニューは動いた。2026-11-23）
+struct GuideDaySteppers: View {
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let move: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button("前の日", systemImage: "chevron.left") { move(-1) }
+                .disabled(!canGoBack)
+            Button("次の日", systemImage: "chevron.right") { move(1) }
+                .disabled(!canGoForward)
+        }
+        .labelStyle(.iconOnly)
+        .barButtonGroupChrome()
+        .fixedSize()
     }
 }
 

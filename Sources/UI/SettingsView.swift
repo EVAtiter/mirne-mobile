@@ -22,8 +22,8 @@ struct SettingsSheet: View {
                 .padding(SettingsSheetLayout.barPadding)
             }
         }
-        .frame(minWidth: SettingsSheetLayout.minimumSize.width, idealWidth: SettingsSheetLayout.idealSize.width,
-               minHeight: SettingsSheetLayout.minimumSize.height, idealHeight: SettingsSheetLayout.idealSize.height)
+        // Mac のシートの窓の大きさ（iOS はシートの大きさを OS が決める）
+        .sheetResizableSize(minimum: SettingsSheetLayout.minimumSize, ideal: SettingsSheetLayout.idealSize)
     }
 }
 
@@ -49,7 +49,7 @@ struct SheetTopCloseBar: View {
     }
 }
 
-/// 設定のシートの大きさ
+/// 設定のシートの大きさ（Mac のシートの窓）
 enum SettingsSheetLayout {
     static let minimumSize = CGSize(width: 480, height: 400)
     static let idealSize = CGSize(width: 560, height: 600)
@@ -111,6 +111,8 @@ struct SettingsView: View {
             }
             CredentialsSection(model: credentials)
             if let error { Section { ErrorBanner(error: error) } }
+            // 名前・版・権利と、使っている部品の許諾文（iOS には Mac の「について」の画面が無いので、どの OS でも最後に）
+            AboutSection()
         }
         .formStyle(.grouped)
         .settingsScrollerMargins()

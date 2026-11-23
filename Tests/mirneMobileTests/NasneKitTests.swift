@@ -299,12 +299,22 @@ struct DeviceInfoTests {
         let service = service()
         let list = try await service.hddList()
         #expect(!list.isEmpty)
-        // internalFlag は名前と逆（内蔵が 0）。素材は内蔵 1 台で internalFlag 0
+        // 内蔵か外付けかは id で見分ける（0 が内蔵）。素材は内蔵 1 台（id 0）
         #expect(list.first?.isInternal == true)
+        #expect(list.first?.isConnected == true)
         let detail = try await service.hddInfo(id: 0)
         #expect(detail.isInternal)
         #expect(detail.totalBytes == 498_521_100_288)
         #expect(detail.usedBytes + detail.freeBytes <= detail.totalBytes)
+    }
+
+    @Test("HDD は id で見分け、マウントされていて登録されているときだけ使える状態とする")
+    func hddIdentityAndConnection() {
+        #expect(WebAPIDeviceInfoService.isInternalDisk(id: HDDIdentity.internalID))
+        #expect(!WebAPIDeviceInfoService.isInternalDisk(id: 1))
+        #expect(HDDEntry(id: 1, isInternal: false, isMounted: true, isRegistered: true).isConnected)
+        #expect(!HDDEntry(id: 1, isInternal: false, isMounted: true, isRegistered: false).isConnected)
+        #expect(!HDDEntry(id: 1, isInternal: false, isMounted: false, isRegistered: true).isConnected)
     }
 
     @Test("チャンネル 24 件。本チャンネルは同じ TS の TV サービスのうち最小の serviceID（9 局）")

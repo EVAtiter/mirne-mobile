@@ -1,15 +1,20 @@
 import SwiftUI
 
 extension MainWindowLayout {
-    /// これより狭いと、ツールバーの「設定」と切り替えを文字なしのシンボルだけにする（iPad 版。縦向きでも文字を出し、
-    /// 画面の分割で半分より狭くしたときだけシンボルにする。体感の値。画面を見て決める）
-    static let compactToolbarWidth: CGFloat = 600
+    /// これより狭いと、各画面の帯の「ライブ」「設定」を文字なしの絵だけにする（iOS 版：iPad の広い幅でも文字は出さず、いつも絵だけ。2026-11-23）
+    static let accessoryTitlesWidth: CGFloat = .infinity
 }
 
 extension View {
     /// シートの中身の幅（iPad 版：シートの幅は OS が決めるので、その幅いっぱいに広げる）
     func sheetContentWidth(_ width: CGFloat) -> some View {
         frame(maxWidth: .infinity)
+    }
+
+    /// 大きさを変えられるシートの最小と最初の大きさ（iOS 版：シートの大きさは OS が決めるので何もしない。
+    /// 前は Mac の最小の幅〔480pt〕を iOS にも当てていて、iPhone では設定のシートの中身が画面の幅からはみ出した。2026-11-23）
+    func sheetResizableSize(minimum: CGSize, ideal: CGSize) -> some View {
+        self
     }
 
     /// シートの高さを中身に合わせる（iPad 版：既定のフォームのシートは中身が少なくても縦に大きく、下に広い余白が残った。2026-11-22）。

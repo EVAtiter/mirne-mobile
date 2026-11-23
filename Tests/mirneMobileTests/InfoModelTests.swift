@@ -40,11 +40,30 @@ struct InfoModelTests {
         #expect(device.titleCount == 2 && device.titleMax == 3000)
         let hdds = try #require(model.hdds.value)
         #expect(!hdds.isEmpty)
-        #expect(hdds.first(where: \.isMounted)?.usedFraction != nil)
+        #expect(hdds.first(where: \.isConnected)?.usedFraction != nil)
         let status = try #require(model.status.value)
         #expect(status.messages.isEmpty)     // 素材の CAMsg・EMMMsg は generation だけ
         #expect(model.recNg.value?.count == 3)
         #expect(model.lastUpdated != nil && !model.isLoading)
+    }
+
+    @Test("内蔵か外付けかは id で見分け、登録されていない外付けは詳細を頼まず、つながっていない扱いにする")
+    func unregisteredExternalDisk() async throws {
+        let http = fixtureHTTP()
+        // 内蔵（id 0）と、マウントされているが登録されていない外付け（id 1。internalFlag は名前と逆で 1）
+        http.reply("/status/HDDListGet", body: Data(#"""
+            {"errorcode":0,"number":2,"HDD":[{"id":0,"internalFlag":0,"mountStatus":1,"registerFlag":1},
+            {"id":1,"internalFlag":1,"mountStatus":1,"registerFlag":0}]}
+            """#.utf8))
+        let model = InfoModel(services: try services(http))
+        await model.reload()
+        let hdds = try #require(model.hdds.value)
+        #expect(hdds.count == 2)
+        let external = try #require(hdds.first { $0.id == 1 })
+        #expect(!external.isInternal && !external.isConnected && external.totalBytes == nil)
+        #expect(hdds.first { $0.id == 0 }?.isInternal == true)
+        // 詳細は内蔵の 1 回だけ頼む（登録されていない外付けには頼まない）
+        #expect(http.sentRequests.filter { $0.url?.path == "/status/HDDInfoGet" }.count == 1)
     }
 
     @Test("1 つの区画が失敗しても、ほかの区画は出す")

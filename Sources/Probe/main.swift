@@ -168,12 +168,12 @@ func runInfo() async throws {
     let info = try await service.deviceInfo()
     say("本体: 版 \(info.displaySoftwareVersion)・時刻 \(info.currentDate == nil ? "なし" : "あり")・地域のコード \(info.pref == nil ? "なし" : "あり")・初期設定 \(info.finishedSetup ? "済み" : "未")・更新 \(info.updateExists ? "あり" : "なし")")
     for hdd in try await service.hddList() {
-        if hdd.isMounted, let detail = try? await service.hddInfo(id: hdd.id) {
+        if hdd.isConnected, let detail = try? await service.hddInfo(id: hdd.id) {
             let gigabyte = 1_000_000_000.0
             say(String(format: "HDD %d: %@・%@・全体 %.1f GB・空き %.1f GB", hdd.id, hdd.isInternal ? "内蔵" : "外付け",
                        detail.format, Double(detail.totalBytes) / gigabyte, Double(detail.freeBytes) / gigabyte))
         } else {
-            say("HDD \(hdd.id): \(hdd.isInternal ? "内蔵" : "外付け")・マウント \(hdd.isMounted ? "済み" : "なし")")
+            say("HDD \(hdd.id): \(hdd.isInternal ? "内蔵" : "外付け")・マウント \(hdd.isMounted ? "済み" : "なし")・登録 \(hdd.isRegistered ? "済み" : "なし")")
         }
     }
     let channels = try await service.channels()

@@ -1,14 +1,19 @@
 import SwiftUI
 
 extension MainWindowLayout {
-    /// これより狭いと、ツールバーの「ライブ」「設定」と切り替えを文字なしのシンボルだけにする（macOS 版。体感の値。画面を見て決める）
-    static let compactToolbarWidth: CGFloat = 860
+    /// これより狭いと、各画面の帯の「ライブ」「設定」を文字なしの絵だけにする（macOS 版。体感の値。画面を見て決める）
+    static let accessoryTitlesWidth: CGFloat = 860
 }
 
 extension View {
     /// シートの中身の幅（macOS 版：渡した幅に決める）
     func sheetContentWidth(_ width: CGFloat) -> some View {
         frame(width: width)
+    }
+
+    /// 大きさを変えられるシートの最小と最初の大きさ（macOS 版：シートの窓の大きさにする）
+    func sheetResizableSize(minimum: CGSize, ideal: CGSize) -> some View {
+        frame(minWidth: minimum.width, idealWidth: ideal.width, minHeight: minimum.height, idealHeight: ideal.height)
     }
 
     /// シートの高さを中身に合わせる（macOS 版：シートは元から中身の高さなので何もしない）

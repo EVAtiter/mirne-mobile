@@ -401,8 +401,13 @@ struct GuideView: View {
                 }
             }
             .guideTrailingScrollerInset()
+            // 斜めのスワイプでも自由に動かす（Mac のトラックパッド・Magic Mouse。iPad・iPhone は元から）
+            .guideFreeScrolling()
         }
         .scrollPosition($position)
+        // 下端の安全領域（iPad・iPhone の OS のタブバー）を無視し、横のスクロールバーを画面の下端（タブバーの裏）に出す。
+        // タブバーは重なるだけにする（Mac と同じ。最後の行の真ん中はタブバーに隠れる。2026-11-23）
+        .ignoresSafeArea(.container, edges: .bottom)
         // 送った量だけを時刻の列・上の操作・作る行の範囲へ渡す（この値を読むのはその 3 つだけなので、番組の欄は描き直さない）
         .onScrollGeometryChange(for: GuideScrollGeometry.self) {
             GuideScrollGeometry(offset: CGPoint(x: $0.contentOffset.x + $0.contentInsets.leading, y: $0.contentOffset.y + $0.contentInsets.top),
@@ -452,6 +457,8 @@ struct GuideView: View {
                              ?? (hasAnyCoverage ? "nasne の番組表なし" : "未取得"))
                             .scaledFont(.caption)
                             .foregroundStyle(.secondary)
+                            // 局の欄の中央に置く（2026-11-23。局名の行は左寄せのまま）
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
                 .padding(.horizontal, 6)
@@ -623,40 +630,49 @@ private struct GuideToolbar: View {
             if let title {
                 ViewThatFits(in: .horizontal) {
                     CenteredRow(spacing: ScreenActionBarLayout.spacing) {
-                        HStack(spacing: ScreenActionBarLayout.spacing) { dayControls }
+                        HStack(spacing: ScreenActionBarLayout.spacing) { dayControls(showsSteppers: true) }
                         MainBarTitle(text: title)
-                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls }
+                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls(showsStatus: true) }
                     }
-                    row
+                    rows
                 }
             } else {
-                row
+                rows
             }
         }
         // 録画・予約・情報の帯と同じ余白（狭い幅では段の高さを揃える）
         .screenActionBarPadding()
+        // 入りきらなくても、帯の幅は画面の幅のまま（下の番組表を広げて左右にずらさない。2026-11-23）
+        .frame(minWidth: 0, maxWidth: .infinity)
     }
 
-    /// 名前を出さない帯
-    private var row: some View {
+    /// 名前を出さない帯。入らなければ更新の時刻を省き、それでも入らなければ前後の日のボタンも省く
+    /// （ほかの部品を押しつぶさない。日は日付のメニューから選べる。iPad の窓をいちばん狭くしたとき。2026-11-23）
+    private var rows: some View {
+        ViewThatFits(in: .horizontal) {
+            row(showsStatus: true, showsSteppers: true)
+            row(showsStatus: false, showsSteppers: true)
+            row(showsStatus: false, showsSteppers: false)
+        }
+    }
+
+    private func row(showsStatus: Bool, showsSteppers: Bool) -> some View {
         HStack(spacing: ScreenActionBarLayout.spacing) {
-            dayControls
+            dayControls(showsSteppers: showsSteppers)
             Spacer()
-            trailingControls
+            trailingControls(showsStatus: showsStatus)
         }
     }
 
     /// 左の日付の操作（前後の日・日付・「現在」）
-    @ViewBuilder private var dayControls: some View {
+    @ViewBuilder private func dayControls(showsSteppers: Bool) -> some View {
         let visible = min(scroll.visibleDay, max(days.count - 1, 0))
-        ControlGroup {
-            Button("前の日", systemImage: "chevron.left") { moveDay(-1) }
-                .disabled(days.isEmpty || visible == 0)
-            Button("次の日", systemImage: "chevron.right") { moveDay(1) }
-                .disabled(days.isEmpty || visible == days.count - 1)
+        // 前後の日（OS ごとの部品）
+        if showsSteppers {
+            GuideDaySteppers(canGoBack: !days.isEmpty && visible > 0,
+                             canGoForward: !days.isEmpty && visible < days.count - 1,
+                             move: moveDay)
         }
-        .labelStyle(.iconOnly)
-        .fixedSize()
         Picker("日付", selection: Binding(get: { days.isEmpty ? nil : visible }, set: { if let index = $0 { showDay(index) } })) {
             ForEach(days.indices, id: \.self) { index in
                 Text(compact ? GuideDayText.compact(days[index]) : ProgramGuide.dayLabel(days[index])).tag(Optional(index))
@@ -665,16 +681,22 @@ private struct GuideToolbar: View {
         .labelsHidden()
         .pickerStyle(.menu)
         .fixedSize()
+        // iOS はナビゲーションの帯のボタンと同じ形（OS ごと）
+        .barMenuChrome()
         // 今の時刻へ送る（2026-11-20 に「今」から改めた）
         Button("現在", action: showNow)
+            // 幅が足りなくても文字を折り返さない（帯の形を選ぶのは `rows`）
+            .lineLimit(1)
+            .fixedSize()
+            .barButtonChrome()
     }
 
     /// 右の操作（更新の時刻・「更新」・「ライブ」「設定」・閉じる）
-    @ViewBuilder private var trailingControls: some View {
-        refreshStatus
+    @ViewBuilder private func trailingControls(showsStatus: Bool) -> some View {
+        if showsStatus { refreshStatus }
         ScreenRefreshButton(help: "番組表を更新する（⌘R。nasne の番組表が変わっていなければ読み込まない）",
                             isRefreshing: refreshState.isRunning, action: refresh)
-        // iPhone の横向き（ナビゲーションの帯を隠すとき）は「ライブ」「設定」
+        // 「ライブ」「設定」（上の帯の右端に置くとき〔iPhone の縦向き・iPad の狭い分割〕は出さない）
         MainBarAccessoryButtons()
         if let dismiss {
             Button("閉じる", action: dismiss)
