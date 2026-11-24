@@ -18,6 +18,15 @@ are trademarks of their respective owners.
 The license of this source code does not grant any patent or trademark license relating to
 DTCP-IP or other technologies, and it gives no warranty of non-infringement.
 
+## Disclaimer
+
+mirne mobile is provided "as is", without warranty of any kind. To the extent permitted by law, the author is not liable for any damages arising from the use of, or inability to use, mirne mobile, including, for example, when:
+
+- because of a bug or any other cause, a schedule was not created, was created differently from what you intended, or a program was not recorded in part or in full as scheduled
+- because of a bug or any other cause, a recording was corrupted or lost
+
+The author cannot compensate for the content of recordings, and cannot repair, restore, or copy recordings.
+
 ## Features
 
 - **Program guide (番組表)**: shows the nasne's digital terrestrial program guide for 8 days, with station logos. Scheduled programs are marked. Click a program for its details and schedule a recording from there. The search field in the bar at the top finds upcoming programs by title and short description (you can narrow it down by genre). On the Mac, swipe on a trackpad or Magic Mouse, or drag with the mouse, to move it diagonally as well
