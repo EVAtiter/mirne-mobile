@@ -200,6 +200,8 @@ struct RecordingsView: View {
         }
         environment.playFromList(title, action)
         openViewer()
+        // 一覧に重ねたカードも閉じる（行のダブルクリック・Return・カードの再生のボタンのどれでも。2026-11-24）
+        model.selectedID = nil
     }
 
     /// 録画の保護を切り替える（確かめは出さない。元に戻せるため）。切り替えられなかったときは知らせの帯に出す

@@ -20,9 +20,10 @@ struct ViewerView: View {
         let media = environment.mediaPlayback
         ViewerContent(overlay: overlay)
             // 全画面のボタンは右上の角（左上の窓のボタンと同じく、操作部と一緒に出し入れする。2026-11-23）。
-            // メディアは OS の標準の再生画面が全画面のボタンを持つので出さない
+            // メディアは窓のボタンと同じくいつも出す（OS の標準の再生画面は、SwiftUI の窓を全画面に入れない窓と見て、
+            // 全画面のボタンを出さなかった。2026-11-24）
             .overlay(alignment: .topTrailing) {
-                if media == nil && overlay.controlsShown(playback.state) {
+                if media != nil || overlay.controlsShown(playback.state) {
                     fullScreenButton.transition(.opacity)
                 }
             }
@@ -51,8 +52,12 @@ struct ViewerView: View {
                 return .handled
             }
             .onKeyPress(keys: ViewerKeys.all) { press in
-                // メディアのキーは OS の標準の再生画面に任せる
-                guard media == nil else { return .ignored }
+                // メディアのキーは OS の標準の再生画面に任せる。全画面（F）だけはこちらで受ける（2026-11-24）
+                if media != nil {
+                    guard press.characters == ViewerKeys.fullScreen, press.modifiers.isEmpty else { return .ignored }
+                    toggleFullScreen()
+                    return .handled
+                }
                 let result = ViewerBehavior.handle(press, environment: environment, window: windowActions)
                 if result == .handled { overlay.show() }
                 return result

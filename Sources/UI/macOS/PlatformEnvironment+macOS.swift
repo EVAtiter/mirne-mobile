@@ -3,9 +3,10 @@
 final class PlatformEnvironment {
     /// 視聴ウィンドウの窓（標準の大きさに戻す。メニューからも届くようにここに置く）
     let viewerWindow = ViewerWindowController()
-    /// 主ウインドウの位置と大きさの保存と復元
+    /// 主ウインドウの位置と大きさの保存と復元。戻した大きさを AppKit に「利用者が決めた大きさ」として覚えさせる
+    /// （覚えさせないと、別の画面へ移すたびに、AppKit がその画面で覚えている前の大きさへ当て直した。視聴ウインドウと同じ。2026-11-24）
     let mainWindowPlacement = WindowPlacementController(key: WindowPlacementKey.main, name: "主ウインドウ",
-                                                        minimumSize: MainWindowLayout.minimumSize)
+                                                        minimumSize: MainWindowLayout.minimumSize, remembersSizeAsUser: true)
     /// スリープの前に受信を閉じる
     private let powerObserver: PowerObserver
 

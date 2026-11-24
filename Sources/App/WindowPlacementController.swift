@@ -101,7 +101,7 @@ final class WindowPlacementController {
     private let minimumSize: CGSize
     /// 戻すときに保つ縦横比（視聴ウインドウの 16:9。主ウインドウは nil）
     private let aspectRatio: CGSize?
-    /// 大きさを当てるとき、AppKit に「利用者が決めた大きさ」として覚えさせるか（`NSWindow.setFrameAsUserSize`。視聴ウインドウ）
+    /// 大きさを当てるとき、AppKit に「利用者が決めた大きさ」として覚えさせるか（`NSWindow.setFrameAsUserSize`。視聴ウインドウと主ウインドウ）
     private let remembersSizeAsUser: Bool
     private let logger: Logger
 

@@ -32,9 +32,11 @@ enum ViewerOverlayTiming {
 
 /// 視聴ウィンドウで受けるキー（文字だけのキー。主ウィンドウの検索欄で打った文字では効かない）
 enum ViewerKeys {
+    /// 全画面の切り替え（録画・ライブ・メディアで同じ。メディアでもこちらで受ける）
+    static let fullScreen = "f"
     /// 録画とライブで共通のキーと、ライブの数字キー（リモコンキー）
     /// "0" は ⌘0（標準の大きさに戻す）と、ライブのリモコンキー 10 の両方
-    static let all: Set<KeyEquivalent> = Set([.space, "m", "a", "c", "f", "q", "s", "t", "0", .leftArrow, .rightArrow, .upArrow, .downArrow]
+    static let all: Set<KeyEquivalent> = Set([.space, "m", "a", "c", KeyEquivalent(Character(fullScreen)), "q", "s", "t", "0", .leftArrow, .rightArrow, .upArrow, .downArrow]
                                              + LiveRemoteKeys.keys.map { KeyEquivalent($0.character) })
 }
 
@@ -303,7 +305,7 @@ enum ViewerBehavior {
             playback.cycleRate()
         case "c" where !command:
             environment.captions.isEnabled.toggle()
-        case "f" where !command:
+        case KeyEquivalent(Character(ViewerKeys.fullScreen)) where !command:
             guard let window else { return .ignored }
             window.toggleFullScreen()
         case "t" where !command:
