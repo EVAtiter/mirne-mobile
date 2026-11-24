@@ -38,7 +38,7 @@ struct InfoModelTests {
             MockHTTP.Reply(status: 200, body: Data(#"{"errorcode":0,"recNgList":{"generation":\#(recNg.withLock { $0 })}}"#.utf8))
         }
         let services = try services(http)
-        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo, initialLink: .online)
         let model = InfoModel(services: services, liveStatus: monitor)
         func count() -> Int { http.sentRequests.filter { $0.url?.path == "/status/recNgListGet" }.count }
         await monitor.poll()

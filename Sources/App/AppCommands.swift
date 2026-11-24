@@ -3,7 +3,7 @@ import SwiftUI
 // メニュー（構成は 2026-11-20 に決めた）。
 //
 // SwiftUI の `.commands` で、mirne mobile・ファイル・編集・コントロール・表示・ウインドウ・ヘルプの 7 つを作る。
-// 主ウインドウの操作（設定・新規予約・削除・検索・更新・番組表の「現在」）は `MainCommandCenter` に頼みを置き、
+// 主ウインドウの操作（設定・マニュアル予約・削除・検索・更新・番組表の「現在」）は `MainCommandCenter` に頼みを置き、
 // 画面がそれを受け取って行う（画面を開いていなければ、切り替えてから受け取る）。
 // 文字だけのキー（スペース・Q・S・A・C・M・T）の項目は、視聴ウインドウが前にあるときだけ有効にする
 // （主ウインドウの検索欄に打った文字をメニューが横取りしないため。視聴ウインドウは `FocusedValues.viewerIsKey` を置く）
@@ -77,7 +77,7 @@ private struct FileMenuItems: View {
             Task { await environment.startLive() }
         }
         .keyboardShortcut("l", modifiers: .command)
-        .disabled(environment.live == nil)
+        .disabled(environment.live == nil || !environment.isNasneOnline)
 
         // 選んだ録画の再生（名前は一覧の下の欄のボタンと同じ）
         let actions = playActions
@@ -97,10 +97,13 @@ private struct FileMenuItems: View {
 
         Divider()
         // 局の一覧は予約の画面が開いたときに読むので、ここでは登録していれば押せる（読めなければ画面がシートを出さない）
-        MainCommandButton(environment: environment, title: "新規予約…", request: .newSchedule, section: .schedules)
-            .keyboardShortcut("n", modifiers: .command)
+        if ManualScheduleLabel.isOffered {
+            MainCommandButton(environment: environment, title: ManualScheduleLabel.title + "…", request: .newSchedule, section: .schedules)
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(!environment.isNasneOnline)
 
-        Divider()
+            Divider()
+        }
         // 録画を削除…・予約を削除…（⌘⌫。選んでいる画面の項目に効く）
         switch selection {
         case .recordings:
@@ -110,7 +113,7 @@ private struct FileMenuItems: View {
         case .schedules:
             Button("予約を削除…") { environment.mainCommands.request(.deleteSchedule) }
                 .keyboardShortcut(.delete, modifiers: .command)
-                .disabled(environment.mainCommands.schedules?.selectedSchedule == nil)
+                .disabled(environment.mainCommands.schedules?.selectedSchedule == nil || !environment.isNasneOnline)
         default:
             Button("削除…") {}
                 .keyboardShortcut(.delete, modifiers: .command)
@@ -122,7 +125,8 @@ private struct FileMenuItems: View {
     private var playActions: [RecordingPlayAction] {
         guard let model = environment.mainCommands.recordings, let title = model.selectedTitle else { return [] }
         let panel = RecordingPlayPanel.make(title: title, state: model.viewingState(of: title), canPlay: model.canPlay,
-                                            isStarting: environment.playback.state.isStarting, isRefreshing: model.isRefreshing)
+                                            isStarting: environment.playback.state.isStarting, isRefreshing: model.isRefreshing,
+                                            isOffline: model.isOffline)
         guard case .actions(let actions, let fromStart) = panel else { return [] }
         return actions + (fromStart.map { [$0] } ?? [])
     }

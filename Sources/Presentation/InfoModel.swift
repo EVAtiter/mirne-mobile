@@ -96,7 +96,7 @@ public final class InfoModel {
     /// 見回りで読み直す。世代と状態の並びが、前に読んだときと違うときだけ、読み込み中を挟まずに全部の区画を読み直す。
     /// まだ読んでいない・読んでいる途中は何もしない
     public func refreshIfChanged() async {
-        guard let signature = observedSignature, signature != knownSignature else { return }
+        guard liveStatus.allowsNasneRequests, let signature = observedSignature, signature != knownSignature else { return }
         await refreshQuietly()
     }
 
@@ -119,6 +119,8 @@ public final class InfoModel {
     /// 全部の区画を読み込み直す（並べて読む。ひとつの失敗はほかに及ばない）。
     /// `quietly` は見回りからの読み直し：読み込み中を挟まず、読めなかった区画は今の値を残す（誤りは出さない）
     public func reload(quietly: Bool = false) async {
+        // つながっていない間は読まない（前の値を出したまま。情報の画面は「nasne が見つかりません」を出す）
+        guard liveStatus.allowsNasneRequests else { return }
         knownSignature = observedSignature
         if !quietly {
             device = .loading

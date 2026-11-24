@@ -117,15 +117,18 @@ public final class ProgramGuideModel {
 
     private let service: any ProgramGuideService
     private let versions: any ProgramGuideVersionStore
+    /// 集約ステータスの見回り（つながっていない間は取り直さない。無ければいつでも取り直す）
+    private let link: LiveStatusMonitor?
     private let now: @Sendable () -> Date
     @ObservationIgnored private var running: Task<Void, Never>?
     private static let logger = Logger(subsystem: AppLog.subsystem, category: "epg")
 
     public init(service: any ProgramGuideService, store: EPGStore, versions: any ProgramGuideVersionStore,
-                now: @escaping @Sendable () -> Date = Date.init) {
+                link: LiveStatusMonitor? = nil, now: @escaping @Sendable () -> Date = Date.init) {
         self.service = service
         self.store = store
         self.versions = versions
+        self.link = link
         self.now = now
     }
 
@@ -142,6 +145,7 @@ public final class ProgramGuideModel {
     }
 
     private func refresh(quietly: Bool) async {
+        guard link.allowsNasneRequests else { return }
         if let running {
             await running.value
             return

@@ -1,55 +1,59 @@
 import SwiftUI
 
-/// 予約の一覧。開始の早い順に並べ、選んだ予約の詳細と画質の変更・削除のボタンは、
-/// 一覧の右寄りに選んだ行の高さで重ねるカードに出す（録画の画面と同じ `SelectionCardOverlay`）。
-/// 「新規予約」で手動の予約を作る。
+/// 予約の一覧。開始の早い順に並べ、予約を押すと、詳細と画質・繰り返しの変更・削除の予約のシートをじかに出す
+/// （2026-11-24。前は一覧に重ねるカードを出し、その「画質を変更」から変更のシートを出していた）。
+/// 「マニュアル予約」で時刻を指定した予約を作る。
 /// 時刻の変更は出さない：nasne は時刻を指定した予約を 1 件しか持てず、「作ってから消す」が必ず Fault 830 になる
 /// （2026-11-20 実機）
 struct SchedulesView: View {
     @State var model: SchedulesModel
+    /// nasne に届くか（つながっていない間は nasne と通信する操作を押せなくする。2026-11-24）
+    @Environment(\.nasneLink) private var link
     @Environment(AppEnvironment.self) private var environment
-    /// 上の帯に画面の操作も置いているか（そのときは「新規予約」を上の帯に出す）
+    /// 上の帯に画面の操作も置いているか（そのときは「マニュアル予約」を上の帯に出す）
     @Environment(\.mainTitleBarHasActions) private var titleBarHasActions
-    /// 開いているシート（作成・画質の変更。閉じていれば nil）
+    /// 開いているシート（作成・予約のシート。閉じていれば nil）
     @State private var sheet: ScheduleSheet?
     /// 消すかを確かめている予約
     @State private var pendingDeletion: RecordSchedule?
-    /// 見えている行の枠（カードを選んだ行の高さに置くため）
-    @State private var rowFrames = ListRowFrames<String>()
     let scheduleService: any ScheduleService
-    /// 狭い幅の形（「新規予約」は絵だけ・カードはシート）
+    /// 予約の録画先を決めるのに HDD の一覧を読む
+    let deviceInfo: any DeviceInfoService
+    /// 狭い幅の形（「マニュアル予約」は絵だけ）
     @Environment(\.usesCompactLayout) private var compact
-    /// カードのシートを閉じ終えてからすること（画質の変更のシートは、カードのシートを出している間は出せない）
-    @State private var afterCardSheet: (() -> Void)?
+
+    /// マニュアル予約のモデル（録画先は送る直前に HDD の一覧から決める）
+    private func creationModel() -> ScheduleCreationModel {
+        ScheduleCreationModel(channels: model.channels, service: scheduleService,
+                              destination: { [deviceInfo] in await RecordDestination.preferred(from: deviceInfo) })
+    }
 
     var body: some View {
-        // 消す前の確かめ。カードのシートを出しているときは、シートの側で出す（下の画面からはシートの上に出せない）
-        deletionAlert(screen, isPresented: pendingDeletion != nil && !showsCardSheet)
+        // 消す前の確かめ。予約のシートを出しているときは、シートの側で出す（下の画面からはシートの上に出せない）
+        deletionAlert(screen, isPresented: pendingDeletion != nil && sheet == nil)
     }
 
     private var screen: some View {
-        // 上の帯（番組表と同じ位置）に「＋ 新規予約」。帯の下の横線で、左右の仕切りの縦線を止める
+        // 上の帯（番組表と同じ位置）に「マニュアル予約」。帯の下の横線で、左右の仕切りの縦線を止める
         // （仕切りの縦線がツールバーまで突き抜けていた。2026-11-20）
         VStack(spacing: 0) {
-            // 上の帯に画面の操作を置くとき（iPhone の縦向き・iPad の狭い分割）は「新規予約」を上の帯の左に出すので、ここには置かない
-            ScreenActionBar(hasLeading: !titleBarHasActions) {
-                if !titleBarHasActions { newScheduleButton }
+            // 上の帯に画面の操作を置くとき（iPhone の縦向き・iPad の狭い分割）は「マニュアル予約」を上の帯の左に出すので、ここには置かない
+            ScreenActionBar(status: listStatus, hasLeading: ManualScheduleLabel.isOffered && !titleBarHasActions) {
+                if ManualScheduleLabel.isOffered && !titleBarHasActions { newScheduleButton }
             }
-            // 一覧は窓の幅いっぱい。選んだ予約の詳細は一覧に重ねるカードに出す（2026-11-22。前は右に区切った詳細の欄。録画の画面と同じ）
+            // 一覧は窓の幅いっぱい。予約を押すと予約のシートを出す
             list
-                .overlay {
-                    if !compact { SelectionCardOverlay(id: model.selectedID, rows: rowFrames) { _ in card } }
-                }
         }
         .navigationTitle("予約")
-        // 狭い幅では、選んだ予約のカードを下からのシートで出す
-        .selectionCardSheet(isPresented: showsCardSheet, close: { model.selectedID = nil }, onDismiss: runAfterCardSheet) {
-            deletionAlert(card, isPresented: pendingDeletion != nil)
+        // 予約を押したら（一覧の選択が変わったら）、予約のシートをじかに出す
+        .onChange(of: model.selectedID) {
+            guard sheet == nil, let schedule = model.selectedSchedule else { return }
+            sheet = .edit(ScheduleEditModel(original: schedule, service: scheduleService))
         }
         // 開くたびに読み直す（古い一覧のまま消すと、もう無い ID に送って何も消えない）。
         // 開いている間の読み直しは MainView が受け持つ（予約の一覧の世代が変わったら。番組表の予約済みの印も同じモデルを使う）
         .task { await model.reload() }
-        // メニュー：新しい予約…（⌘N）・予約を削除…（⌘⌫）
+        // メニュー：マニュアル予約…（⌘N）・予約を削除…（⌘⌫）
         .onChange(of: environment.mainCommands.pending, initial: true) {
             let center = environment.mainCommands
             if center.consume(.newSchedule), sheet == nil {
@@ -57,39 +61,33 @@ struct SchedulesView: View {
                     // 予約の画面を開いた直後は局の一覧をまだ読んでいないので、読み終えてから出す
                     if model.channels.isEmpty { await model.reload() }
                     if !model.channels.isEmpty, sheet == nil {
-                        sheet = .create(ScheduleCreationModel(channels: model.channels, service: scheduleService))
+                        sheet = .create(creationModel())
                     }
                 }
             }
             if center.consume(.deleteSchedule), let schedule = model.selectedSchedule { pendingDeletion = schedule }
         }
-        .sheet(item: $sheet) { sheet in
+        // 予約のシートを閉じたら（スワイプで閉じたときも）選択を外す（次に同じ予約を押してもシートが出るように）
+        .sheet(item: $sheet, onDismiss: { model.selectedID = nil }) { sheet in
             switch sheet {
             case .create(let creation):
-                ScheduleCreationView(model: creation, channelName: model.channelName) { createdID in
-                    self.sheet = nil
-                    Task {
-                        await model.reload()
-                        if let createdID { model.selectedID = createdID }
-                    }
-                }
-            case .edit(let edit):
-                ScheduleEditView(model: edit) {
+                // 作った予約は選ばない（選ぶと予約のシートが開くため。2026-11-24 に、予約を押すとシートを出す形にした）
+                ScheduleCreationView(model: creation, channelName: model.channelName) { _ in
                     self.sheet = nil
                     Task { await model.reload() }
                 }
+            case .edit(let edit):
+                deletionAlert(
+                    ScheduleEditView(model: edit, channelName: model.channelName(edit.original.channel),
+                                     timing: ScheduleTiming(edit.original, now: Date()),
+                                     delete: { pendingDeletion = edit.original }) {
+                        self.sheet = nil
+                        model.selectedID = nil
+                        Task { await model.reload() }
+                    },
+                    isPresented: pendingDeletion != nil)
             }
         }
-    }
-
-    /// カードをシートで出すか（狭い幅で、予約を選んでいるとき）
-    private var showsCardSheet: Bool { compact && model.selectedSchedule != nil }
-
-    /// カードのシートを閉じ終えたら、預けていた操作をする
-    private func runAfterCardSheet() {
-        let action = afterCardSheet
-        afterCardSheet = nil
-        action?()
     }
 
     /// 消す前の確かめ（文は 2026-11-19 に）。閉じたときの Binding の set では何もしない
@@ -98,6 +96,9 @@ struct SchedulesView: View {
             Button("削除", role: .destructive) {
                 guard let schedule = pendingDeletion else { return }
                 pendingDeletion = nil
+                // 予約のシートから消したときは、シートも閉じる
+                sheet = nil
+                model.selectedID = nil
                 // 消せなかったときは知らせの帯に出す（前はアラート）
                 Task {
                     if let error = await model.delete(schedule) {
@@ -113,17 +114,17 @@ struct SchedulesView: View {
         }
     }
 
-    /// 「＋ 新規予約」で時刻を指定した予約を作る。文字付きで置く（ツールバーの絵だけのボタンは分かりにくかった。
-    /// 2026-11-21。一覧の上の帯から画面の上の帯へ移した）
+    /// 「マニュアル予約」で時刻を指定した予約を作る。文字付きで置く（ツールバーの絵だけのボタンは分かりにくかった。
+    /// 2026-11-21。一覧の上の帯から画面の上の帯へ移した。2026-11-24 に「新規予約」と ＋ から改めた：番組の予約と取り違えやすかった）
     private var newScheduleButton: some View {
         Button {
-            sheet = .create(ScheduleCreationModel(channels: model.channels, service: scheduleService))
-        } label: { Label("新規予約", systemImage: "plus") }
+            sheet = .create(creationModel())
+        } label: { Label(ManualScheduleLabel.title, systemImage: ManualScheduleLabel.symbol) }
             // 狭い幅では絵だけ（2026-11-23）
             .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
             // iOS はほかの帯のボタンと同じ丸い板（OS ごと。2026-11-24）
             .barButtonChrome()
-            .disabled(model.channels.isEmpty)
+            .disabled(model.channels.isEmpty || link != .online)
             .help(model.channels.isEmpty ? "局の一覧を読み込めていないので、予約を作れません" : "時刻を指定して予約する")
     }
 
@@ -139,52 +140,19 @@ struct SchedulesView: View {
             List(sorted, id: \.id, selection: $model.selectedID) { schedule in
                 ScheduleRow(schedule: schedule, channelName: model.channelName(schedule.channel),
                             timing: ScheduleTiming(schedule, now: now))
-                    .reportsRowFrame(schedule.id, into: rowFrames)
                     .tag(schedule.id)
             }
             .compactListTopMargin()
-            // カードの外を押したら閉じる（行を押したときは、カードがその行へ移る）。esc でも閉じる（どちらも選択を外す）
-            // 狭い幅ではカードはシートなので見張らない（シートの中を押しても閉じてしまう）
-            .closesSelectionCardOnOutsideTap(rows: rowFrames, isOpen: model.selectedID != nil && !compact) { model.selectedID = nil }
-            .onKeyPress(.escape) {
-                guard model.selectedID != nil else { return .ignored }
-                model.selectedID = nil
-                return .handled
-            }
             .overlay {
                 if sorted.isEmpty { ContentUnavailableView("予約はありません", systemImage: "calendar") }
             }
-            .safeAreaInset(edge: .bottom) {
-                Text("\(sorted.count) 件")
-                    .scaledFont(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(4).background(.bar)
-            }
         }
     }
 
-    /// 選んだ予約のカード
-    @ViewBuilder
-    private var card: some View {
-        if let schedule = model.selectedSchedule {
-            let timing = ScheduleTiming(schedule, now: Date())
-            ScheduleCard(
-                schedule: schedule, channelName: model.channelName(schedule.channel), timing: timing,
-                // 画質の変更は始まる前の予約だけ
-                editQuality: timing == .upcoming ? { editQuality(schedule) } : nil,
-                delete: { pendingDeletion = schedule },
-                close: { model.selectedID = nil })
-        }
-    }
-
-    /// 画質の変更のシートを出す。カードのシートから押したときは、カードのシートを閉じ終えてから出す
-    private func editQuality(_ schedule: RecordSchedule) {
-        let edit = ScheduleSheet.edit(ScheduleEditModel(original: schedule, service: scheduleService))
-        if showsCardSheet {
-            afterCardSheet = { sheet = edit }
-            model.selectedID = nil
-            return
-        }
-        sheet = edit
+    /// 帯の右に出す件数（読めていなければ出さない。録画の件数と同じ形・同じ場所。2026-11-24 から。前は一覧の下端の帯）
+    private var listStatus: String? {
+        guard case .loaded = model.schedules else { return nil }
+        return "\(model.sortedSchedules.count) 件"
     }
 }
 
@@ -239,6 +207,8 @@ struct ScheduleRow: View {
                 case .ended: Badge(text: "終了", tint: .gray)
                 case .upcoming: EmptyView()
                 }
+                // 繰り返しの予約は名前の札（一回録画は出さない。2026-11-24）
+                if let repeatText = ScheduleRepeatText.badge(schedule) { Badge(text: repeatText, tint: .accentColor) }
                 Text(ScheduleText.title(schedule)).lineLimit(1)
             }
             HStack(spacing: 8) {
@@ -254,58 +224,6 @@ struct ScheduleRow: View {
     }
 }
 
-/// 予約のカード：詳細と、画質の変更・削除のボタン。録画先（recordDestinationID）は出さない：予約では作り手の望む値で、
-/// 別のアプリで作った予約では実際の録画先と食い違うことがある（torne mobile HB と同じ扱い）
-struct ScheduleCard: View {
-    let schedule: RecordSchedule
-    let channelName: String
-    let timing: ScheduleTiming
-    /// 画質の変更（出さないときは nil）
-    var editQuality: (() -> Void)?
-    /// 削除
-    var delete: (() -> Void)?
-    let close: () -> Void
-
-    var body: some View {
-        SelectionCardContent(title: ScheduleText.title(schedule), close: close) {
-            VStack(alignment: .leading, spacing: 4) {
-                SelectionCardField("局", value: channelName)
-                SelectionCardField("開始", value: schedule.start.formatted(date: .abbreviated, time: .shortened))
-                SelectionCardField("終了", value: schedule.end.formatted(date: .abbreviated, time: .shortened))
-                if let duration = RecordingFormat.duration(schedule.durationSeconds) { SelectionCardField("長さ", value: duration) }
-                SelectionCardField("画質", value: QualityMode.label(schedule.desiredQualityMode))
-                SelectionCardField("予約の種類", value: schedule.isLinkedToProgram ? "番組の予約" : "時刻を指定した予約")
-                switch timing {
-                case .recording: SelectionCardField("状態", value: "録画中")
-                case .ended: SelectionCardField("状態", value: "終了")
-                case .upcoming: EmptyView()
-                }
-            }
-            // 終わった手動の予約は nasne の一覧に残り、残っている間はほかの手動の予約を作れない（Fault 830）
-            if timing == .ended && !schedule.isLinkedToProgram {
-                Text("時刻を指定した予約は、終わっても nasne の一覧に残ります。残っている間は、ほかの時刻を指定した予約を作れません。")
-                    .scaledFont(.callout).foregroundStyle(.secondary)
-            }
-        } actions: {
-            if editQuality != nil || delete != nil {
-                HStack {
-                    if let editQuality { Button("画質を変更", action: editQuality).buttonStyle(.bordered) }
-                    Spacer(minLength: 0)
-                    if let delete {
-                        Button(role: .destructive, action: delete) {
-                            // ゴミ箱の絵だけ（録画のカードと同じ。2026-11-23。どの OS も）
-                            Image(systemName: CardDeleteSymbol.name)
-                        }
-                        .accessibilityLabel("削除…")
-                        .buttonStyle(.bordered)
-                        .help("この予約を削除する")
-                    }
-                }
-            }
-        }
-    }
-}
-
 extension ScheduleCreationModel: Identifiable {
     public nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
 }
@@ -318,50 +236,36 @@ struct ScheduleCreationView: View {
     let finish: (String?) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Form {
+        ScheduleSheetFrame(
+            title: model.program == nil ? ManualScheduleLabel.title : "番組を予約",
+            confirm: ScheduleSheetConfirm(title: "予約する", disabled: model.draft == nil || model.phase.isBusy, action: submit),
+            cancelTitle: "キャンセル", cancel: { finish(nil) },
+            status: model.validationMessage
+                ?? (model.phase.isBusy ? (model.phase == .checking ? "重なる予約を確かめています…" : "予約しています…") : nil),
+            isBusy: model.phase.isBusy
+        ) {
+            Group {
                 if let program = model.program {
                     programSection(program)
                 } else {
                     manualSection
                 }
+            }
+            .disabled(model.phase.isBusy)
 
-                if case .failed(let error, let mayHaveCreated) = model.phase {
-                    Section {
-                        ErrorBanner(error: error)
-                        if mayHaveCreated {
-                            Text("nasne に届いて、予約が作られていることがあります。閉じて予約の一覧を確かめてから、作り直してください。")
-                                .scaledFont(.callout).foregroundStyle(.secondary)
-                        }
+            if case .failed(let error, let mayHaveCreated) = model.phase {
+                Section {
+                    ErrorBanner(error: error)
+                    if mayHaveCreated {
+                        Text("nasne に届いて、予約が作られていることがあります。閉じて予約の一覧を確かめてから、作り直してください。")
+                            .scaledFont(.callout).foregroundStyle(.secondary)
                     }
                 }
             }
-            .formStyle(.grouped)
-            .formFitsContentHeight()
-            .disabled(model.phase.isBusy)
-            // 下の帯：macOS は右に「キャンセル」「予約する」、iPad は左端に「キャンセル」・右端に「予約する」（太字）（2026-11-22。
-            // 上の帯の左右に置く形を試したが下に戻し、並びだけ上の帯のときの左右にした）
-            HStack {
-                if SheetActionLayout.splitsCancelAndConfirm { cancelButton }
-                if let message = model.validationMessage {
-                    Text(message).scaledFont(.callout).foregroundStyle(.secondary)
-                } else if model.phase.isBusy {
-                    ProgressView().controlSize(.small)
-                    Text(model.phase == .checking ? "重なる予約を確かめています…" : "予約しています…").scaledFont(.callout)
-                }
-                Spacer()
-                if !SheetActionLayout.splitsCancelAndConfirm { cancelButton }
-                Button(action: submit) {
-                    Text("予約する").fontWeight(SheetActionLayout.splitsCancelAndConfirm ? .semibold : nil)
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(model.draft == nil || model.phase.isBusy)
-            }
-            .padding()
         }
         // シートの幅（macOS は決めた幅、iPad は OS の決めるシートの幅いっぱい）
         .sheetContentWidth(ScheduleSheetLayout.width)
-        .sheetFitsContentHeight()
+        .scheduleSheetSizing()
         .alert("重なる予約があります", isPresented: conflictsShown) {
             Button("予約する") { Task { await model.confirmConflicts() } }
             Button("やめる", role: .cancel) { model.cancelConflicts() }
@@ -371,12 +275,6 @@ struct ScheduleCreationView: View {
         .onChange(of: model.phase) {
             if case .created(let id) = model.phase { finish(id) }
         }
-    }
-
-    private var cancelButton: some View {
-        Button("キャンセル", role: .cancel) { finish(nil) }
-            .keyboardShortcut(.cancelAction)
-            .disabled(model.phase.isBusy)
     }
 
     /// 「予約する」
@@ -397,7 +295,9 @@ struct ScheduleCreationView: View {
             DatePicker("開始", selection: $model.start, displayedComponents: [.date, .hourAndMinute])
             Stepper(value: $model.durationMinutes, in: 1...ScheduleCreationLimits.maximumMinutes) {
                 LabeledContent("長さ") {
+                    // 欄の名前は出さない（macOS のフォームでは欄の名前が「長さ」の右にもう一度、折り返して出た。2026-11-24）
                     TextField("長さ", value: $model.durationMinutes, format: .number)
+                        .labelsHidden()
                         .multilineTextAlignment(.trailing)
                         .frame(width: 60)
                     Text("分")
@@ -406,7 +306,7 @@ struct ScheduleCreationView: View {
             LabeledContent("終了", value: model.end.formatted(.dateTime.month().day().weekday(.abbreviated).hour().minute()))
             qualityPicker
         } header: {
-            Text("新規予約")
+            if !SheetActionLayout.usesNavigationBar { Text(ManualScheduleLabel.title) }
         } footer: {
             Text("時刻を指定した予約は、nasne に 1 件しか置けません。録画されても録画一覧に載らず、終わった後も nasne の予約の一覧に残ります。")
                 .scaledFont(.caption).foregroundStyle(.secondary)
@@ -421,10 +321,13 @@ struct ScheduleCreationView: View {
             LabeledContent("放送", value: "\(program.start.formatted(.dateTime.month().day().weekday(.abbreviated).hour().minute()))〜\(program.end.formatted(.dateTime.hour().minute()))")
             if let duration = RecordingFormat.duration(program.durationSeconds) { LabeledContent("長さ", value: duration) }
             qualityPicker
+            ScheduleRepeatPicker(selection: $model.repeatMode, choices: model.repeatChoices)
         } header: {
-            Text("番組を予約")
+            if !SheetActionLayout.usesNavigationBar { Text("番組を予約") }
         } footer: {
-            Text("番組の予約は、nasne が開始と長さを番組に合わせます。録画が始まると録画一覧に載り、終わると予約の一覧から消えます。")
+            Text(model.repeatMode == .once
+                 ? "番組の予約は、nasne が開始と長さを番組に合わせます。録画が始まると録画一覧に載り、終わると予約の一覧から消えます。"
+                 : ScheduleRepeatNote.text)
                 .scaledFont(.caption).foregroundStyle(.secondary)
         }
     }
@@ -470,7 +373,7 @@ enum ScheduleCreationLimits {
 
 /// 予約の画面のシート
 enum ScheduleSheet: Identifiable {
-    /// 新規予約・時刻の変更
+    /// マニュアル予約・時刻の変更
     case create(ScheduleCreationModel)
     /// 画質の変更
     case edit(ScheduleEditModel)
@@ -483,76 +386,97 @@ enum ScheduleSheet: Identifiable {
     }
 }
 
-/// 画質の変更。送った後は読み直した値を出し、変わらなかったらそのことを出す（文は）
+/// 予約のシート（2026-11-24 から一覧の予約を押すとじかに出す。前はカードを出し、その「画質を変更」から出していた）。
+/// 詳細と、始まる前の予約なら画質と繰り返しの変更。左下に削除。送った後は読み直した値を出し、変わらなかったらそのことを出す
 struct ScheduleEditView: View {
     @State var model: ScheduleEditModel
+    let channelName: String
+    let timing: ScheduleTiming
+    /// 削除（押すと確かめのアラートを出す。シートの側で出す）
+    let delete: () -> Void
     let finish: () -> Void
+    /// nasne に届くか（つながっていない間は変更も削除もさせない）
+    @Environment(\.nasneLink) private var link
+
+    /// 画質・繰り返しを変えられるか（始まる前の予約で、つながっているとき）
+    private var editable: Bool { timing == .upcoming && link == .online }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Form {
-                Section {
-                    Text(ScheduleText.title(model.original)).scaledFont(.headline)
-                    LabeledContent("時刻", value: ScheduleText.timeRange(model.original))
-                    LabeledContent("今の画質", value: QualityMode.label(model.original.desiredQualityMode))
+        ScheduleSheetFrame(
+            title: editable ? "予約を変更" : "予約",
+            confirm: editable && !isFinished
+                ? ScheduleSheetConfirm(title: "変更する", disabled: !model.hasChange || model.phase == .sending, action: submit) : nil,
+            cancelTitle: editable && !isFinished ? "キャンセル" : "閉じる", cancel: finish,
+            delete: isFinished ? nil : delete, deleteDisabled: model.phase == .sending || link != .online,
+            status: model.phase == .sending ? "変更しています…" : nil,
+            isBusy: model.phase == .sending
+        ) {
+            Section {
+                Text(ScheduleText.title(model.original)).scaledFont(.headline)
+                LabeledContent("局", value: channelName)
+                LabeledContent("時刻", value: ScheduleText.timeRange(model.original))
+                if let duration = RecordingFormat.duration(model.original.durationSeconds) { LabeledContent("長さ", value: duration) }
+                LabeledContent("予約の種類", value: model.original.isLinkedToProgram ? "番組の予約" : "時刻を指定した予約")
+                switch timing {
+                case .recording: LabeledContent("状態", value: "録画中")
+                case .ended: LabeledContent("状態", value: "終了")
+                case .upcoming: EmptyView()
+                }
+                if editable {
                     Picker("画質", selection: $model.qualityMode) {
                         Text(QualityMode.label(QualityMode.dr)).tag(QualityMode.dr)
                         Text(QualityMode.label(QualityMode.threeTimes)).tag(QualityMode.threeTimes)
                     }
                     .pickerStyle(.segmented)
                     .disabled(model.phase != .editing)
-                } header: {
-                    Text("画質を変更")
+                } else {
+                    LabeledContent("画質", value: QualityMode.label(model.original.desiredQualityMode))
                 }
-                switch model.phase {
-                case .finished(reflected: false):
-                    Section {
-                        Text("nasne は受け付けましたが、画質は変わりませんでした。")
-                        if let reread = model.reread {
-                            LabeledContent("読み直した画質", value: QualityMode.label(reread.desiredQualityMode))
-                        }
-                    }
-                case .missing:
-                    Section { Text("読み直したら、この予約は nasne の一覧にありませんでした。") }
-                case .failed(let error, let mayHaveChanged):
-                    Section {
-                        ErrorBanner(error: error)
-                        if mayHaveChanged {
-                            Text("nasne に届いて、変わっていることがあります。閉じて予約の一覧を確かめてください。")
-                                .scaledFont(.callout).foregroundStyle(.secondary)
-                        }
-                    }
-                default:
-                    EmptyView()
+                // 繰り返し（変えられるのは番組に紐付いた予約で、今の値が読めるときだけ。2026-11-24）
+                if editable && model.offersRepeatChange {
+                    ScheduleRepeatPicker(selection: $model.repeatMode, choices: model.repeatChoices)
+                        .disabled(model.phase != .editing)
+                } else if let repeatText = ScheduleRepeatText.badge(model.original) {
+                    LabeledContent("繰り返し", value: repeatText)
+                }
+            } header: {
+                if !SheetActionLayout.usesNavigationBar { Text(editable ? "予約を変更" : "予約") }
+            } footer: {
+                // 終わった手動の予約は nasne の一覧に残り、残っている間はほかの手動の予約を作れない（Fault 830）
+                if timing == .ended && !model.original.isLinkedToProgram {
+                    Text("時刻を指定した予約は、終わっても nasne の一覧に残ります。残っている間は、ほかの時刻を指定した予約を作れません。")
+                        .scaledFont(.caption).foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.grouped)
-            .formFitsContentHeight()
-            HStack {
-                if SheetActionLayout.splitsCancelAndConfirm, !isFinished { cancelButton }
-                if model.phase == .sending {
-                    ProgressView().controlSize(.small)
-                    Text("変更しています…").scaledFont(.callout)
-                }
-                Spacer()
-                // ボタンは下の帯（並びは作るシートと同じ。iPad は「キャンセル」を左端へ）
-                switch model.phase {
-                case .finished, .missing:
-                    Button("閉じる", action: finish).keyboardShortcut(.defaultAction)
-                default:
-                    if !SheetActionLayout.splitsCancelAndConfirm { cancelButton }
-                    Button(action: submit) {
-                        Text("変更する").fontWeight(SheetActionLayout.splitsCancelAndConfirm ? .semibold : nil)
+            switch model.phase {
+            case .finished(reflected: false):
+                Section {
+                    Text("nasne は受け付けましたが、変更が反映されませんでした。")
+                    if let reread = model.reread {
+                        LabeledContent("読み直した画質", value: QualityMode.label(reread.desiredQualityMode))
+                        if model.offersRepeatChange {
+                            LabeledContent("読み直した繰り返し",
+                                           value: reread.repeatMode.map(ScheduleRepeatText.label) ?? reread.conditionID)
+                        }
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!model.hasChange || model.phase == .sending)
                 }
+            case .missing:
+                Section { Text("読み直したら、この予約は nasne の一覧にありませんでした。") }
+            case .failed(let error, let mayHaveChanged):
+                Section {
+                    ErrorBanner(error: error)
+                    if mayHaveChanged {
+                        Text("nasne に届いて、変わっていることがあります。閉じて予約の一覧を確かめてください。")
+                            .scaledFont(.callout).foregroundStyle(.secondary)
+                    }
+                }
+            default:
+                EmptyView()
             }
-            .padding()
         }
         // シートの幅（macOS は決めた幅、iPad は OS の決めるシートの幅いっぱい）
         .sheetContentWidth(ScheduleSheetLayout.width)
-        .sheetFitsContentHeight()
+        .scheduleSheetSizing()
         // 変わったときは、そのまま閉じて一覧を読み直す
         .onChange(of: model.phase) {
             if model.phase == .finished(reflected: true) { finish() }
@@ -567,15 +491,135 @@ struct ScheduleEditView: View {
         }
     }
 
-    private var cancelButton: some View {
-        Button("キャンセル", role: .cancel, action: finish)
-            .keyboardShortcut(.cancelAction)
-            .disabled(model.phase == .sending)
-    }
-
     /// 「変更する」
     private func submit() {
         model.dismissFailure()
         Task { await model.submit() }
+    }
+}
+
+/// 繰り返しの選択（公式の torne® mobile と同じ 5 つ。番組表からの予約と、予約の変更のシートで使う）
+struct ScheduleRepeatPicker: View {
+    @Binding var selection: ScheduleRepeat
+    let choices: [ScheduleRepeat]
+
+    var body: some View {
+        Picker("繰り返し", selection: $selection) {
+            ForEach(choices, id: \.self) { choice in
+                Text(ScheduleRepeatText.label(choice)).tag(choice)
+            }
+        }
+        .pickerStyle(.menu)
+    }
+}
+
+/// 繰り返しの予約の説明（予約のシートの下に出す）
+enum ScheduleRepeatNote {
+    static let text = "繰り返しの予約は、録画が終わると nasne が次の回の番組を探して、同じ予約を書き換えます。番組名などで探すので、番組名が大きく変わった回や放送の無い回は見つからないことがあります。"
+}
+
+/// 時刻を指定した予約の入口の名前と絵（帯・メニュー・シートで同じものを使う。2026-11-24 に「新規予約」と ＋ から改めた）
+enum ManualScheduleLabel {
+    /// マニュアル予約の入口を出すか。2026-11-24 に Buffalo 製で測ると、マニュアル予約（eventId 0）は録画しても録画の一覧・Browse・
+    /// 公式のアプリのどれにも何も出ず、HDD の空きも減らなかった（終わった項目が残っている間は次のマニュアル予約も作れない）ので、
+    /// 入口（帯・メニュー・上の帯）を出さない。作りは残し、録画できる作り方が分かったら戻す
+    static let isOffered = false
+    static let title = "マニュアル予約"
+    /// 目覚まし時計（時刻を決めて録る。予約のタブの絵〔カレンダー〕とも、番組表の予約とも似ないもの）
+    static let symbol = "alarm"
+}
+
+/// 予約のシートの確定のボタン
+struct ScheduleSheetConfirm {
+    let title: String
+    let disabled: Bool
+    let action: () -> Void
+}
+
+/// 予約のシートの器（番組表からの予約・マニュアル予約・予約のシートで同じ形。2026-11-24）。
+/// macOS は下の帯（左に削除・右に「キャンセル」と確定）。iOS は iOS の標準の形：上のナビゲーションの帯の左に「キャンセル」・右に確定、
+/// 削除は中身のいちばん下の赤い行（カレンダーの予定と同じ）。中身は狭い幅（iPhone）ではスクロールする
+struct ScheduleSheetFrame<Content: View>: View {
+    let title: String
+    /// 確定のボタン（無ければ「閉じる」だけ）
+    var confirm: ScheduleSheetConfirm?
+    let cancelTitle: String
+    let cancel: () -> Void
+    /// 削除（無ければ出さない。押すと確かめのアラートを出す）
+    var delete: (() -> Void)?
+    var deleteDisabled = false
+    /// 状態の文（入力の誤り・送っている途中）
+    var status: String?
+    var isBusy = false
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if SheetActionLayout.usesNavigationBar {
+            NavigationStack {
+                form
+                    .navigationTitle(title)
+                    .inlineNavigationTitle()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button(cancelTitle, role: .cancel, action: cancel).disabled(isBusy && confirm != nil)
+                        }
+                        if let confirm {
+                            ToolbarItem(placement: .confirmationAction) {
+                                if isBusy {
+                                    ProgressView()
+                                } else {
+                                    Button(confirm.title, action: confirm.action).disabled(confirm.disabled)
+                                }
+                            }
+                        }
+                    }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                form
+                HStack {
+                    if let delete {
+                        Button(role: .destructive, action: delete) { Image(systemName: CardDeleteSymbol.name) }
+                            .accessibilityLabel("削除…")
+                            .help("この予約を削除する")
+                            .disabled(deleteDisabled)
+                    }
+                    if isBusy { ProgressView().controlSize(.small) }
+                    if let status { Text(status).scaledFont(.callout).foregroundStyle(isBusy ? .primary : .secondary) }
+                    Spacer()
+                    Button(cancelTitle, role: .cancel, action: cancel)
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(isBusy && confirm != nil)
+                    if let confirm {
+                        Button(confirm.title, action: confirm.action)
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(confirm.disabled)
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+
+    private var form: some View {
+        Form {
+            content()
+            if SheetActionLayout.usesNavigationBar {
+                // 状態の文（入力の誤り・送っている途中）は中身の下に出す（上の帯には入らない）
+                if let status {
+                    Section { Text(status).scaledFont(.callout).foregroundStyle(.secondary) }
+                }
+                if let delete {
+                    Section {
+                        Button(role: .destructive, action: delete) {
+                            Text("予約を削除").frame(maxWidth: .infinity)
+                        }
+                        .disabled(deleteDisabled)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scheduleSheetFormHeight()
     }
 }

@@ -92,8 +92,10 @@ enum MainNoticeLayout {
     /// 板と画面の左右の端の間（狭い画面で）
     static let outerMargin: CGFloat = 16
     static let cornerRadius: CGFloat = 16
-    /// 板と下の切り替え（タブバー）の間
+    /// 板と下の切り替え（タブバー）の間（iOS 版）
     static let gapAboveTabBar: CGFloat = 8
+    /// 板と横スクロールバーの間（macOS 版。板は窓の下端の横スクロールバーより上に出す）
+    static let gapAboveScroller: CGFloat = 8
     /// 出し入れの動きの長さ
     static let transitionDuration: TimeInterval = 0.25
 }

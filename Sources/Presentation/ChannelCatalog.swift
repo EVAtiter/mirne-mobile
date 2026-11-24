@@ -16,12 +16,15 @@ public final class ChannelCatalog {
     public private(set) var channels: Loadable<[Channel]> = .idle
 
     private let deviceInfo: any DeviceInfoService
+    /// 集約ステータスの見回り（つながっていない間は読まない。無ければいつでも読む）
+    private let link: LiveStatusMonitor?
     /// 読んでいる途中の読み込み（続けて頼まれたら、同じものを待つ）
     @ObservationIgnored private var loading: Task<Void, Never>?
     private static let logger = Logger(subsystem: AppLog.subsystem, category: "webapi")
 
-    public init(deviceInfo: any DeviceInfoService) {
+    public init(deviceInfo: any DeviceInfoService, link: LiveStatusMonitor? = nil) {
         self.deviceInfo = deviceInfo
+        self.link = link
     }
 
     /// 読む。読めていれば `reload` のときだけ読み直す（読めていなければ、失敗していても読み直す）。
@@ -31,7 +34,7 @@ public final class ChannelCatalog {
             await loading.value
             return
         }
-        guard channels.value == nil || reload else { return }
+        guard channels.value == nil || reload, link.allowsNasneRequests else { return }
         let task = Task { [weak self] in
             guard let self else { return }
             await self.fetch()

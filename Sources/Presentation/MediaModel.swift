@@ -27,11 +27,14 @@ public final class MediaModel {
     public private(set) var current: MediaLocation?
 
     private let services: NasneServices
+    /// 集約ステータスの見回り（つながっていない間は読まない。無ければいつでも読む）
+    private let link: LiveStatusMonitor?
     /// 覚えている中身を読んだときの中身の版（読めなかったら nil）
     @ObservationIgnored private var knownUpdateID: Int?
 
-    public init(services: NasneServices) {
+    public init(services: NasneServices, link: LiveStatusMonitor? = nil) {
         self.services = services
+        self.link = link
     }
 
     /// 場所の中身（まだ読んでいなければ idle）
@@ -42,6 +45,7 @@ public final class MediaModel {
     /// 場所を開く。まだ読んでいない（か、読めなかった）ときだけ読む
     public func show(_ location: MediaLocation) async {
         current = location
+        guard link.allowsNasneRequests else { return }
         switch listing(at: location) {
         case .loaded, .loading: return
         case .idle, .failed: await load(location)
@@ -55,7 +59,7 @@ public final class MediaModel {
 
     /// いま見ている場所を読み直す
     public func reload() async {
-        guard let current else { return }
+        guard let current, link.allowsNasneRequests else { return }
         await load(current)
     }
 
@@ -63,7 +67,7 @@ public final class MediaModel {
     /// ほかに覚えている場所は捨てる。版が読めない・今の場所をまだ読めていない・読んでいる途中は何もしない。
     /// 今の場所が読めなかったときは今の中身を残し、版も覚えない（次の見回りでもう一度）
     public func refreshIfChanged() async {
-        guard let current, case .loaded(let shown) = listing(at: current),
+        guard link.allowsNasneRequests, let current, case .loaded(let shown) = listing(at: current),
               let version = try? await services.media.updateID(), version != knownUpdateID else { return }
         guard let latest = try? await read(current) else { return }
         // 待っている間に場所を移った・読み直したなら使わない

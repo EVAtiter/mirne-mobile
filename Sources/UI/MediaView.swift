@@ -4,6 +4,8 @@ import SwiftUI
 /// nasne は共有フォルダーを種類ごとに 3 つの木で出すので、種類を選んでから共有フォルダー（share1 など）に入る。
 /// たどった道は画面の中で持ち、上の帯の「戻る」で 1 つ上へ戻る（主ウインドウの上の帯とは別にする）
 struct MediaView: View {
+    /// nasne に届くか（つながっていない間は nasne と通信する操作を押せなくする。2026-11-24）
+    @Environment(\.nasneLink) private var link
     @State var model: MediaModel
     /// 再生の窓（画面）を開く。無ければ動画・音楽を押しても再生しない
     let openViewer: (() -> Void)?
@@ -53,6 +55,7 @@ struct MediaView: View {
                     MediaRowLabel(title: kind.title, symbol: kind.symbol, detail: nil, showsDisclosure: true)
                 }
                 .buttonStyle(.plain)
+                .disabled(link != .online)
             }
         }
     }
@@ -66,6 +69,8 @@ struct MediaView: View {
             if listing.folders.isEmpty && listing.files.isEmpty {
                 ContentUnavailableView("何もありません", systemImage: location.kind.symbol,
                                        description: Text("このフォルダーに\(location.kind.title)のファイルはありません。"))
+                    // 残りの高さいっぱいに広げる（macOS では中身の高さにしかならず、上の帯ごと窓の縦の真ん中に寄った。2026-11-24）
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     ForEach(listing.folders) { folder in
@@ -73,6 +78,7 @@ struct MediaView: View {
                             MediaRowLabel(title: folder.title, symbol: MediaSymbol.folder, detail: nil, showsDisclosure: true)
                         }
                         .buttonStyle(.plain)
+                .disabled(link != .online)
                     }
                     ForEach(listing.files) { file in
                         if let playback = MediaPlayback(file: file), let openViewer {
@@ -82,10 +88,12 @@ struct MediaView: View {
                                 openViewer()
                             } label: { MediaFileRow(file: file) }
                                 .buttonStyle(.plain)
+                .disabled(link != .online)
                                 .help("再生する")
                         } else if let photos = MediaPhotoAlbum(files: listing.files, selected: file) {
                             Button { album = photos } label: { MediaFileRow(file: file) }
                                 .buttonStyle(.plain)
+                .disabled(link != .online)
                                 .help("写真を開く")
                         } else {
                             MediaFileRow(file: file)

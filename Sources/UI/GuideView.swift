@@ -5,7 +5,7 @@ import SwiftUI
 // 変えたところ:
 // - 局は mirne の `ChannelList.Entry` ではなく nasne のチャンネル一覧（`Channel`）。並べる局は `GuideLineupModel`
 // - データの出所は mirne の `ViewerModel` ではなく `ProgramGuideModel`（nasne の EPGGet → EPGStore）。読み直しの合図はその書き込みの回数
-// - 時計は Mac の時刻（mirne は放送の時刻に合わせる）。番組を押しても選局はせず、詳細の吹き出しをすぐ出す
+// - 時計は Mac の時刻（mirne は放送の時刻に合わせる）。番組を押しても選局はせず、詳細のシートを出す。マウスを置いたときの吹き出しは外した（2026-11-24）
 // - 上の操作の「視聴した局の分だけ集まります」の注記を外した（nasne は全局をまとめて返す。取り直しは開いている間の版数表の見回りで行う）
 // - 別ウィンドウ（`WindowID.guide`・`GuideWindowController`）とシートは、まだ写していない
 
@@ -110,21 +110,6 @@ enum GuideReloadTiming {
     static let minimumInterval: Duration = .seconds(2)
 }
 
-/// 番組の欄にマウスを置いたときに出す吹き出し（番組の内容）。
-/// システムのツールチップ（`.help`）は文字が小さく書式も選べないので、自前の吹き出しにしている
-enum GuidePopover {
-    /// マウスを置いてから出すまで。番組の欄の上を通り過ぎるだけでは出ないよう、システムのツールチップより少し長くしてある
-    static let hoverDelay: Duration = .seconds(1)
-    /// 吹き出しの幅（概要を読みやすい行の長さに折り返す。文字の倍率を掛ける）
-    static var width: CGFloat { (baseWidth * GuideLayout.scale).rounded() }
-    private static let baseWidth: CGFloat = 340
-    static let padding: CGFloat = 14
-    /// 時刻・番組名・概要の間
-    static let spacing: CGFloat = 6
-    /// 矢印を向ける所の幅。番組の欄の横の中央から出すための細い縦の線（0 だと吹き出しが出ない）
-    static let anchorWidth: CGFloat = 1
-}
-
 /// 番組表からライブで見る口（mirne mobile で足した）
 struct GuideLive {
     let model: LiveModel
@@ -193,6 +178,8 @@ struct GuideTable: Sendable {
 /// 開いたときに局の一覧を読み、番組表を取り直す（版数表が前と同じなら EPGGet は送らない）
 struct GuideView: View {
     let guide: ProgramGuideModel
+    /// nasne に届くか（つながっていない間は nasne と通信する操作を押せなくする。2026-11-24）
+    @Environment(\.nasneLink) private var link
     let lineup: GuideLineupModel
     /// 番組から予約するときの予約のサービスと、作った後の知らせ（mirne mobile で足した）
     var scheduling: GuideScheduling?
@@ -225,25 +212,53 @@ struct GuideView: View {
     @Environment(\.usesCompactLayout) private var compact
     /// 送った量（時刻の列と上の操作だけが読む）
     @State private var scroll = GuideScrollState()
-    /// マウスの下の番組と吹き出し
-    @State private var hover = GuideHoverState()
     @State private var loading = GuideLoadState()
     /// 局のロゴの絵（serviceID ごと。`lineup.logos` が変わったときだけ PNG を読み直す）
     @State private var logoImages: [Int: Image] = [:]
+    /// 番組の検索の語（空なら番組表を出す。2026-11-24）
+    @State private var searchText = ""
+    /// 番組の検索で絞るジャンル（nil ならすべて）
+    @State private var searchGenre: GuideGenreCategory?
+    /// 番組の検索の索引（番組表を読み直したときに作り直す）
+    @State private var searchIndex = ProgramSearchIndex.empty
+    /// 上の帯の高さ（帯を高さだけの空きの上に重ねて置くため。`GuideToolbarSlot`）
+    @State private var toolbarHeight: CGFloat = 0
+    /// 検索の欄に打てる状態か
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            GuideToolbar(days: table?.days ?? [], scroll: scroll,
-                         moveDay: moveDay(by:), showDay: showDay(_:), showNow: showNow, dismiss: dismiss)
+            // 帯は高さだけの空きの上に重ねる（下の `GuideToolbarSlot` の説明。2026-11-24）
+            GuideToolbarSlot(height: $toolbarHeight) {
+                GuideToolbar(days: table?.days ?? [], scroll: scroll,
+                             moveDay: moveDay(by:), showDay: showDay(_:), showNow: showNow, dismiss: dismiss,
+                             searchText: $searchText, searchFocused: $searchFocused)
+            }
             Divider()
             if lineup.lineup.isEmpty {
                 lineupPlaceholder
             } else {
+                let searching = ProgramSearchQuery.isActive(searchText)
                 grid
                     // ほかのアプリから戻るクリックで、番組のシートを出さない（macOS。窓を前面にするだけ）
                     .overlay { ActivationClickBlocker() }
+                    // 検索の間は番組表を隠すだけにする（作り直すと、語を消して戻ったときに見ていた位置が失われる）
+                    .opacity(searching ? 0 : 1)
+                    .allowsHitTesting(!searching)
+                    .accessibilityHidden(searching)
+                    .overlay {
+                        if searching {
+                            ProgramSearchResults(index: searchIndex, query: searchText, genre: $searchGenre, marks: scheduleMarks,
+                                                 logos: logoImages) { result in
+                                sheet = .program(GuideProgramSelection(station: result.channel, event: result.event))
+                            }
+                            .background(Color.windowBackground)
+                        }
+                    }
             }
         }
+        // 番組の検索の欄（Mac は窓のタイトルの帯の右。iOS は帯の中に置くので何もしない）
+        .mainToolbarSearch(text: $searchText, focused: $searchFocused, prompt: ProgramSearchLayout.prompt)
         // 番組表の書き込み・局の一覧の変化を見て読み直す。見るのは下の小さな view だけにし、この画面全体は描き直さない
         .background {
             GuideReloadDriver(revision: guide.revision, lineup: lineup.lineup.map(\.guideID), rangeStart: rangeStart) { immediate in
@@ -280,7 +295,6 @@ struct GuideView: View {
         .onChange(of: lineup.logos, initial: true) {
             logoImages = lineup.logos.compactMapValues(GuideLogo.image(from:))
         }
-        .onDisappear { hover.reset() }
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .program(let selection):
@@ -289,6 +303,8 @@ struct GuideView: View {
                              watch: live.map { live in { self.sheet = nil; live.watch(selection.station) } },
                              watchAvailability: live?.model.availability(of: selection.station) ?? .unknown,
                              close: { self.sheet = nil })
+                    // シートの外（番組表）をクリックしても閉じる（Mac。2026-11-24）
+                    .closesOnOutsideClick { self.sheet = nil }
             case .creation(let creation):
                 ScheduleCreationView(model: creation, channelName: { _ in creation.program?.channel.serviceName ?? "" }) { createdID in
                     let title = creation.program?.title
@@ -320,7 +336,8 @@ struct GuideView: View {
     private func reserve(_ selection: GuideProgramSelection) {
         guard let scheduling, let program = ScheduleProgram(station: selection.station, event: selection.event),
               program.isReservable(at: Date()) else { return }
-        sheet = .creation(ScheduleCreationModel(program: program, service: scheduling.service))
+        sheet = .creation(ScheduleCreationModel(program: program, service: scheduling.service,
+                                                destination: { [deviceInfo = scheduling.deviceInfo] in await RecordDestination.preferred(from: deviceInfo) }))
     }
 
     /// 並べる局が無いとき（読み込み中・失敗・テレビの局が無い）
@@ -332,6 +349,8 @@ struct GuideView: View {
         case .loaded:
             ContentUnavailableView("テレビの局がありません", systemImage: "list.bullet.rectangle",
                                    description: Text("nasne のチャンネル一覧に、テレビの局がありません。"))
+                // 残りの高さいっぱいに広げる（macOS では中身の高さにしかならず、上の帯ごと窓の縦の真ん中に寄る。メディアの空のフォルダーと同じ。2026-11-24）
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -398,7 +417,7 @@ struct GuideView: View {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 Section {
                     GuideRows(table: table, now: now, genreStyle: style, palette: palette, marks: scheduleMarks, scroll: scroll,
-                              hover: hover, select: showProgram(station:placement:))
+                              select: showProgram(station:placement:))
                 } header: {
                     header(table)
                 }
@@ -406,10 +425,13 @@ struct GuideView: View {
             .guideTrailingScrollerInset()
             // 斜めのスワイプでも自由に動かす（Mac のトラックパッド・Magic Mouse。iPad・iPhone は元から）
             .guideFreeScrolling()
+            // マウスの左ボタンを押したまま動かして送る（Mac。2026-11-24）
+            .guideMouseDragScrolling()
         }
         .scrollPosition($position)
         // 下端の安全領域（iPad・iPhone の OS のタブバー）を無視し、横のスクロールバーを画面の下端（タブバーの裏）に出す。
-        // タブバーは重なるだけにする（Mac と同じ。最後の行の真ん中はタブバーに隠れる。2026-11-23）
+        // タブバーは重なるだけにする（最後の行の真ん中はタブバーに隠れる。2026-11-23）。Mac は切り替えを各画面の帯に置くので（2026-11-24）、
+        // 下端に重なるのは知らせの板だけ
         .ignoresSafeArea(.container, edges: .bottom)
         // 送った量だけを時刻の列・上の操作・作る行の範囲へ渡す（この値を読むのはその 3 つだけなので、番組の欄は描き直さない）
         .onScrollGeometryChange(for: GuideScrollGeometry.self) {
@@ -417,7 +439,6 @@ struct GuideView: View {
                                 viewportHeight: $0.containerSize.height)
         } action: { old, geometry in
             scroll.update(geometry, dayCount: table.days.count, hourCount: table.hours.count)
-            if old.offset != geometry.offset { hover.scrolled() }
         }
         .overlay(alignment: .topLeading) {
             FloatingRuler(scroll: scroll, top: headerHeight) { rulerContent(table, now: now) }
@@ -449,7 +470,7 @@ struct GuideView: View {
                             let availability = live.model.availability(of: station.entry)
                             Button { live.watch(station.entry) } label: { Image(systemName: LiveSymbol.watch) }
                                 .buttonStyle(.borderless)
-                                .disabled(availability.isUnavailable)
+                                .disabled(availability.isUnavailable || link != .online)
                                 .help(GuideLive.help(availability))
                                 .accessibilityLabel("この局をライブで見る")
                         }
@@ -544,8 +565,9 @@ struct GuideView: View {
         // 範囲の終わりは持っている番組で決まるので、始まりから先をすべて読む（番組表は nasne から 8 日分ほど）
         let schedules = await guide.store.schedules(of: services, overlapping: start..<Date.distantFuture)
             .map { $0.normalizingBroadcastMarks() }
-        let built = await Task.detached(priority: .userInitiated) {
-            GuideTable.build(start: start, lineup: stations, schedules: schedules)
+        let (built, index) = await Task.detached(priority: .userInitiated) {
+            (GuideTable.build(start: start, lineup: stations, schedules: schedules),
+             ProgramSearchIndex(sources: zip(stations, schedules).map { ProgramSearchIndex.Source(channel: $0, events: $1.events) }))
         }.value
         // 読み始めた後で取り消されても、読んだ結果は新しいので使う（次々に合図が来ると、取り消してばかりで表が変わらなくなる）。
         // 後から読み始めた結果が先に出ていれば、古いほうは捨てる
@@ -557,6 +579,7 @@ struct GuideView: View {
         // mirne は局の一覧を初めから持っている）
         let isFirstLoad = (table?.stations.isEmpty ?? true) && !built.stations.isEmpty
         table = built
+        searchIndex = index
         #if DEBUG
         // 非機能要件の計測（「番組表の取得 → 表示」）：EPGGet で書き換えた番組表を、初めて表に出したとき（開発用のビルドだけ）
         if let fetch = guide.lastChangedFetch, fetch.revision == revisionAtRead, loading.measuredRevision != fetch.revision {
@@ -614,6 +637,28 @@ private final class GuideLoadState {
 }
 
 /// 上の操作（日付・「現在」・閉じる）。送った位置の日付を出すので、送った量のうち「何日目か」だけを見る
+/// 番組表の上の帯を、高さだけの空きの上に重ねて置く器（2026-11-24）。
+///
+/// 番組表を送るたびに、窓の最小の大きさを求める処理（`NSHostingView.minSize`）が画面全体を測り直していて、
+/// そのたびに帯の並べ方の候補（`ViewThatFits` の中の `CenteredRow`）を全部測り直していた（Mac でドラッグして送る間の、
+/// メインスレッドの時間の約 2 割ずつ。2026-11-24 に Time Profiler で測った）。帯を重ねて置くと、外からは空き（高さだけ）しか測られない。
+/// 帯の高さは帯を描いた後に測って空きに渡す（文字の大きさを変えたときなどに追いつく）
+private struct GuideToolbarSlot<Content: View>: View {
+    @Binding var height: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        Color.clear
+            .frame(height: height)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .top) {
+                content
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            }
+    }
+}
+
 private struct GuideToolbar: View {
     /// 狭い幅の形（日付の曜日の括弧を省く）
     @Environment(\.usesCompactLayout) private var compact
@@ -623,14 +668,33 @@ private struct GuideToolbar: View {
     let showDay: (Int) -> Void
     let showNow: () -> Void
     let dismiss: (() -> Void)?
+    /// 番組の検索の語と、欄に打てる状態か（iOS は帯の右に欄を置く。Mac は窓のタイトルの帯に置くので使わない）
+    @Binding var searchText: String
+    var searchFocused: FocusState<Bool>.Binding
     /// 帯の中央に出す画面の名前（iPhone の横向き。入らない機種では出さない）
     @Environment(\.mainBarTitle) private var title
     /// 上の帯に画面の操作も置いているか（そのときは「現在」を上の帯の左に出す）
     @Environment(\.mainTitleBarHasActions) private var titleBarHasActions
+    /// 帯の中央に置く画面の切り替え（Mac。主画面が配る）
+    @Environment(\.mainBarSwitcher) private var switcher
 
     var body: some View {
         Group {
-            if let title {
+            if let switcher {
+                // 切り替えを中央に。入らなければ前後の日のボタンを省いた形も試す
+                ViewThatFits(in: .horizontal) {
+                    MainBarSwitcherRow(selection: switcher) {
+                        HStack(spacing: ScreenActionBarLayout.spacing) { dayControls(showsSteppers: true) }
+                    } trailing: { _ in
+                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls }
+                    }
+                    MainBarSwitcherRow(selection: switcher) {
+                        HStack(spacing: ScreenActionBarLayout.spacing) { dayControls(showsSteppers: false) }
+                    } trailing: { _ in
+                        HStack(spacing: ScreenActionBarLayout.spacing) { trailingControls }
+                    }
+                }
+            } else if let title {
                 ViewThatFits(in: .horizontal) {
                     CenteredRow(spacing: ScreenActionBarLayout.spacing) {
                         HStack(spacing: ScreenActionBarLayout.spacing) { dayControls(showsSteppers: true) }
@@ -696,8 +760,14 @@ private struct GuideToolbar: View {
         .barMenuChrome()
     }
 
-    /// 右の操作（「ライブ」「設定」・閉じる。「更新」と更新の時刻は 2026-11-24 に外した。開いている間は版数表を見回って取り直す）
+    /// 右の操作（番組の検索の欄〔iOS〕・「ライブ」「設定」・閉じる。「更新」と更新の時刻は 2026-11-24 に外した。開いている間は版数表を見回って取り直す）
     @ViewBuilder private var trailingControls: some View {
+        if MainSearchPlacement.inScreenBar {
+            // 窓が狭いときは検索の欄から縮める（録画の帯と同じ）
+            BarSearchField(prompt: ProgramSearchLayout.prompt, text: $searchText, focused: searchFocused)
+                .frame(minWidth: ProgramSearchLayout.fieldMinimumWidth, idealWidth: ProgramSearchLayout.fieldWidth,
+                       maxWidth: ProgramSearchLayout.fieldWidth)
+        }
         // 「ライブ」「設定」（上の帯の右端に置くとき〔iPhone の縦向き・iPad の狭い分割〕は出さない）
         MainBarAccessoryButtons()
         if let dismiss {
@@ -751,7 +821,6 @@ private struct GuideRows: View {
     /// 予約済みの印
     let marks: ScheduleMarks
     let scroll: GuideScrollState
-    let hover: GuideHoverState
     /// 番組を押した（局の列の番号と番組）
     let select: (Int, GuidePlacement) -> Void
 
@@ -765,126 +834,14 @@ private struct GuideRows: View {
             ForEach(Array(rows), id: \.self) { hour in
                 GuideHourRow(hour: hour, start: table.span.start.addingTimeInterval(TimeInterval(hour) * 3600),
                              stations: table.stations, cells: table.hours[hour], now: now,
-                             genreStyle: genreStyle, palette: palette, marks: marks, hover: hover) { station, placement in
-                    // 番組を押したら、吹き出しを閉じて詳細のシートを出す（選局はまだ無い。mirne mobile で足した）
-                    hover.select(station: station, placement: placement)
+                             genreStyle: genreStyle, palette: palette, marks: marks) { station, placement in
+                    // 番組を押したら詳細のシートを出す（選局はまだ無い。mirne mobile で足した）
                     select(station, placement)
                 }
                     .equatable()
                     .alignmentGuide(.top) { _ in -CGFloat(hour) * GuideLayout.hourHeight }
             }
         }
-        // マウスの見張りは表全体で 1 つにし、下の行・局・番組を位置から割り出す。
-        // 番組の欄ごとに見張ると数が増え、スクロールのたびにすべての見張りの範囲を直すので、縦も横も重くなった。
-        // 行ごとに見張ると、「現在」へ送った直後などに見張りの範囲が送った位置に追いつかず、マウスと違う行（3 行下）に届いた
-        .contentShape(Rectangle())
-        // マウスを置いたときの吹き出しは macOS だけ（iPad は番組を押したときのシートだけ）
-        .guidePointerHover { phase in
-            switch phase {
-            case .active(let location): hovered(at: location)
-            case .ended: hover.mouseLeft()
-            }
-        }
-    }
-
-    /// マウスの位置（表の左上から）から、下の行・局・番組を割り出す
-    private func hovered(at location: CGPoint) {
-        let row = Int((location.y / GuideLayout.hourHeight).rounded(.down))
-        let column = Int(((location.x - GuideLayout.rulerWidth) / GuideLayout.columnWidth).rounded(.down))
-        guard location.x >= GuideLayout.rulerWidth, table.hours.indices.contains(row), table.hours[row].indices.contains(column) else {
-            hover.update(row: max(row, 0), station: nil, placement: nil)
-            return
-        }
-        let minutes = Double(location.y / GuideLayout.pointsPerMinute)
-        let placement = table.hours[row][column].first { minutes >= $0.offsetMinutes && minutes < $0.offsetMinutes + $0.lengthMinutes }
-        hover.update(row: row, station: column, placement: placement)
-    }
-}
-
-/// マウスの下の番組と、吹き出しを出している番組。
-/// 吹き出しは 1 時間の行に付けて出すので、同じ番組の上で行をまたいでも待ち直さないよう、番組で覚える
-@MainActor
-@Observable
-private final class GuideHoverState {
-    struct Detail: Identifiable, Equatable {
-        /// 吹き出しを出す行（マウスがあった行）と局の列
-        let row: Int
-        let station: Int
-        let placement: GuidePlacement
-        var id: String { "\(station)-\(placement.id)" }
-    }
-
-    private(set) var detail: Detail?
-    @ObservationIgnored private var hovered: HoverKey?
-    @ObservationIgnored private var activeRow: Int?
-    @ObservationIgnored private var task: Task<Void, Never>?
-
-    private struct HoverKey: Equatable {
-        let station: Int
-        let event: UInt16
-    }
-
-    /// マウスが行 `row` の、局 `station` の番組 `placement` の上にある（番組が無ければ nil）。番組が替わったときだけ待ち直す
-    func update(row: Int, station: Int?, placement: GuidePlacement?) {
-        activeRow = row
-        let key = station.flatMap { station in placement.map { HoverKey(station: station, event: $0.id) } }
-        guard key != hovered else { return }
-        hovered = key
-        task?.cancel()
-        if detail != nil { detail = nil }
-        guard let station, let placement else { return }
-        task = Task { [weak self] in
-            try? await Task.sleep(for: GuidePopover.hoverDelay)
-            guard !Task.isCancelled, let self else { return }
-            self.detail = Detail(row: self.activeRow ?? row, station: station, placement: placement)
-        }
-    }
-
-    /// 番組を押した：吹き出しを閉じ、待っている吹き出しも出さない（詳細はシートで出す。mirne mobile で足した。mirne は押すと選局する）。
-    /// マウスの下の番組は覚えたままにし、別の番組へ移るまで吹き出しを出し直さない
-    func select(station: Int, placement: GuidePlacement) {
-        task?.cancel()
-        hovered = HoverKey(station: station, event: placement.id)
-        if detail != nil { detail = nil }
-    }
-
-    /// 吹き出しを閉じた（外を押した）。マウスの下の番組は覚えたままにし、別の番組へ移るまで出し直さない。
-    /// 吹き出しを出していないときにも SwiftUI が閉じる知らせを送ってくることがあり、そのまま待ちを取り消すと、
-    /// 別の番組へ移った直後の待ちが消えて吹き出しが出なかったので、出しているときだけ閉じる
-    func dismiss() {
-        guard detail != nil else { return }
-        task?.cancel()
-        detail = nil
-    }
-
-    /// マウスが番組表の外へ出た。待っている吹き出しは取り消すが、出ている吹き出しと、マウスの下にあった番組は残す。
-    ///
-    /// 吹き出しがマウスの位置に重なって出ると、マウスが吹き出しの上へ移り、番組表の外へ出たことになる。
-    /// ここで全部やり直していた（mirne は `reset()`）ので、閉じる → また番組の上 → 1 秒後に出す → 重なって閉じる、を繰り返して
-    /// 点滅した（2026-11-19。mirne mobile で直した）。出している吹き出しは、別の番組へ移るか外を押すと閉じる
-    func mouseLeft() {
-        task?.cancel()
-        if detail == nil {
-            hovered = nil
-            activeRow = nil
-        }
-    }
-
-    /// 番組表が送られた：吹き出しを閉じ、待っている吹き出しも取り消す。マウスの下の番組も忘れ、止まってから番組の上に置き直すと出す。
-    ///
-    /// 吹き出しは番組表とは別の小さな窓なので、出したまま送ると、マウスの下に来た吹き出しがスクロールの操作を受けてしまい、
-    /// 番組表がそこで止まった（2026-11-21）
-    func scrolled() {
-        guard detail != nil || task != nil || hovered != nil else { return }
-        reset()
-    }
-
-    func reset() {
-        task?.cancel()
-        task = nil
-        hovered = nil
-        activeRow = nil
-        if detail != nil { detail = nil }
     }
 }
 
@@ -904,7 +861,6 @@ private struct GuideHourRow: View, Equatable {
     let palette: GuideGenrePalette
     /// 予約済みの印（mirne mobile で足した）
     let marks: ScheduleMarks
-    let hover: GuideHoverState
     /// 番組を押した（局の列の番号と番組）
     let select: (Int, GuidePlacement) -> Void
 
@@ -934,10 +890,6 @@ private struct GuideHourRow: View, Equatable {
             // 日の境目（朝 4 時。最初の日の始まりは局名の行の線と重なるので引かない）
             if hour > 0, hour % 24 == 0 { GuideDayBoundary() }
         }
-        // 吹き出しはこの行に付けて出す（マウスの見張りは `GuideRows` が表全体で 1 つ持つ）
-        .overlay(alignment: .topLeading) {
-            GuidePopoverHost(hover: hover, row: hour, rowStartMinutes: startMinutes)
-        }
     }
 
     private func cell(_ station: GuideStation, index: Int, placements: [GuidePlacement]) -> some View {
@@ -946,7 +898,7 @@ private struct GuideHourRow: View, Equatable {
             ForEach(placements) { placement in
                 ProgramCell(placement: placement, isOnAir: Self.isOnAir(placement.event, at: now),
                             hasEnded: (placement.event.end ?? .distantFuture) <= now,
-                            isReserved: marks.isReserved(placement.event, on: station.entry), genreStyle: genreStyle,
+                            scheduleMark: marks.mark(placement.event, on: station.entry), genreStyle: genreStyle,
                             genreColor: placement.event.genre.flatMap(palette.color(for:))) { select(index, placement) }
                     .equatable()
                     .offset(y: CGFloat(placement.offsetMinutes - startMinutes) * GuideLayout.pointsPerMinute)
@@ -970,43 +922,13 @@ private struct GuideHourRow: View, Equatable {
     }
 }
 
-/// 行の上に重ねて、吹き出しを出す。吹き出しの状態はこの小さな view だけが読み、行そのものは描き直さない
-private struct GuidePopoverHost: View {
-    let hover: GuideHoverState
-    let row: Int
-    let rowStartMinutes: Double
-
-    var body: some View {
-        let detail = hover.detail.flatMap { $0.row == row ? $0 : nil }
-        Color.clear
-            .allowsHitTesting(false)
-            .popover(item: Binding(get: { detail }, set: { if $0 == nil, detail != nil { hover.dismiss() } }),
-                     attachmentAnchor: .rect(.rect(anchorRect(detail))), arrowEdge: .trailing) { detail in
-                ProgramDetail(event: detail.placement.event)
-                    .popoverScrollWatcher { hover.scrolled() }
-            }
-    }
-
-    /// 吹き出しの矢印を向ける所。番組の欄（この行に見えている部分）の中心から出す。
-    /// 欄の幅いっぱいの矩形にすると矢印が欄の右端から出るので、細い縦の線を欄の横の中央に置く（縦は見えている部分の中央）。
-    /// 幅を 0 にすると空の矩形とみなされ、吹き出しが出なかった
-    private func anchorRect(_ detail: GuideHoverState.Detail?) -> CGRect {
-        guard let detail else { return .zero }
-        let top = max(CGFloat(detail.placement.offsetMinutes - rowStartMinutes) * GuideLayout.pointsPerMinute, 0)
-        let bottom = min(CGFloat(detail.placement.offsetMinutes + detail.placement.lengthMinutes - rowStartMinutes) * GuideLayout.pointsPerMinute,
-                         GuideLayout.hourHeight)
-        let centerX = GuideLayout.rulerWidth + (CGFloat(detail.station) + 0.5) * GuideLayout.columnWidth
-        return CGRect(x: centerX - GuidePopover.anchorWidth / 2, y: top, width: GuidePopover.anchorWidth, height: max(bottom - top, 1))
-    }
-}
-
 /// 1 番組の欄。同じ内容なら描き直さない（押したときの処理は比べない）
 private struct ProgramCell: View, Equatable {
     let placement: GuidePlacement
     let isOnAir: Bool
     let hasEnded: Bool
-    /// 予約済みか（時刻の横に赤い録画の印）
-    let isReserved: Bool
+    /// 予約済みの印（時刻の横に赤い録画の印。一部だけ録るときは中の空いた印。予約していなければ nil）
+    let scheduleMark: ScheduleMark?
     let genreStyle: GuideGenreStyle
     /// ジャンルの色。ジャンルが無い番組は nil（色を付けない）
     let genreColor: Color?
@@ -1014,7 +936,7 @@ private struct ProgramCell: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.placement == rhs.placement && lhs.isOnAir == rhs.isOnAir && lhs.hasEnded == rhs.hasEnded
-            && lhs.isReserved == rhs.isReserved && lhs.genreStyle == rhs.genreStyle && lhs.genreColor == rhs.genreColor
+            && lhs.scheduleMark == rhs.scheduleMark && lhs.genreStyle == rhs.genreStyle && lhs.genreColor == rhs.genreColor
     }
 
     private var event: BroadcastEvent { placement.event }
@@ -1035,12 +957,12 @@ private struct ProgramCell: View, Equatable {
                     Text(event.start.map(ProgramDisplay.clock) ?? "")
                         .scaledFont(.caption, monospacedDigit: true)
                         .foregroundStyle(.secondary)
-                    if isReserved {
+                    if let scheduleMark {
                         // 背景（ジャンルの色）・放送中の枠とぶつからないよう、時刻の横に小さく出す（2026-11-20 に決めた）
-                        Image(systemName: GuideScheduleMark.symbol)
+                        Image(systemName: scheduleMark == .whole ? GuideScheduleMark.symbol : GuideScheduleMark.partSymbol)
                             .scaledFont(.caption2)
                             .foregroundStyle(.red)
-                            .accessibilityLabel("予約済み")
+                            .accessibilityLabel(scheduleMark == .whole ? "予約済み" : "一部を予約済み")
                     }
                 }
                 Text(event.title)
@@ -1076,31 +998,6 @@ private struct ProgramCell: View, Equatable {
             .overlay(alignment: .top) { GuideRule(axis: .horizontal) }
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// 番組の欄の吹き出しの中身。文字は番組の欄より大きく、色は副次の灰色を使わずに読みやすくする
-private struct ProgramDetail: View {
-    let event: BroadcastEvent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: GuidePopover.spacing) {
-            Text(ProgramDisplay.timeRange(event))
-                .scaledFont(.body, monospacedDigit: true)
-            Text(event.title)
-                .scaledFont(.title3, weight: .bold)
-            if !event.text.isEmpty {
-                Text(event.text)
-                    .scaledFont(.body)
-            }
-        }
-        .foregroundStyle(.primary)
-        .multilineTextAlignment(.leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(width: GuidePopover.width, alignment: .leading)
-        .padding(GuidePopover.padding)
-        // 吹き出しの既定の背景は半透明で、下の番組の欄の文字が透けて読みにくいので、不透明にする
-        .presentationBackground(Color.windowBackground)
     }
 }
 
@@ -1162,12 +1059,16 @@ private struct GuideRule: View {
 enum GuideScheduleMark {
     /// 赤い録画の印
     static let symbol = "record.circle"
+    /// 番組の一部だけを録る予約（一部だけ重なるマニュアル予約）の印：中の空いた丸（2026-11-24）
+    static let partSymbol = "circle"
     /// 時刻との間
     static let spacing: CGFloat = 3
 }
 
 struct GuideScheduling {
     let service: any ScheduleService
+    /// 予約の録画先を決めるのに HDD の一覧を読む
+    let deviceInfo: any DeviceInfoService
     /// 予約の一覧（主ウィンドウの予約の画面と同じモデル。予約済みの印に使う）
     let schedules: SchedulesModel
     /// 予約を作った（予約の一覧を読み直す）
@@ -1197,6 +1098,8 @@ enum GuideSheet: Identifiable {
 /// 2026-11-19。吹き出しは外を押すと閉じ、マウスを動かすと消えて「録画予約」を押しにくかった）
 private struct ProgramSheet: View {
     let selection: GuideProgramSelection
+    /// nasne に届くか（つながっていない間は nasne と通信する操作を押せなくする。2026-11-24）
+    @Environment(\.nasneLink) private var link
     /// 「録画予約」（予約できない画面では nil）
     let reserve: (() -> Void)?
     /// 「視聴」（ライブで見る口が無ければ nil。放送中の番組だけに出す）
@@ -1219,7 +1122,7 @@ private struct ProgramSheet: View {
             // 閉じる：iPad は左上の ×、macOS は下の「閉じる」
             if SheetCloseLayout.closesAtTop { SheetTopCloseBar(close: close) }
             ScrollView {
-                VStack(alignment: .leading, spacing: GuidePopover.spacing) {
+                VStack(alignment: .leading, spacing: GuideProgramSheetLayout.spacing) {
                     Text(selection.station.serviceName)
                         .scaledFont(.body)
                         .foregroundStyle(.secondary)
@@ -1237,7 +1140,7 @@ private struct ProgramSheet: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(GuidePopover.padding)
+                .padding(GuideProgramSheetLayout.padding)
             }
             // 高さは中身に合わせ、概要が長いときだけ決めた高さで送る（前は枠を最大の高さまで広げていて、
             // iPad では中身の上下に大きな空きが残った。2026-11-22）
@@ -1266,12 +1169,13 @@ private struct ProgramSheet: View {
             }
             if let watch, onAir {
                 Button(action: watch) { Label("ライブで見る", systemImage: LiveSymbol.watch) }
-                    .disabled(watchAvailability.isUnavailable)
+                    .disabled(watchAvailability.isUnavailable || link != .online)
                     .help(GuideLive.help(watchAvailability))
             }
             if let reserve, reservable {
                 Button(action: reserve) { Label("録画予約…", systemImage: "record.circle") }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(link != .online)
             }
         }
         .padding()
@@ -1279,7 +1183,12 @@ private struct ProgramSheet: View {
 }
 
 /// 番組の詳細のシートの寸法
+/// 番組のシート（番組を押したときに出す詳細）の寸法。
+/// Mac のマウスを置いたときの吹き出しは、クリックの軽さを優先して 2026-11-24 に外した（押したときのシートだけにした）
 private enum GuideProgramSheetLayout {
+    static let padding: CGFloat = 14
+    /// 局・時刻・番組名・概要の間
+    static let spacing: CGFloat = 6
     /// 幅（macOS。iPad はシートの幅いっぱい）
     static let width: CGFloat = 440
     /// 番組の情報（局名・時刻・番組名・概要）の欄の高さの上限。概要が長いときはこの高さで送る

@@ -369,11 +369,14 @@ public struct XSRSRequestVocabulary: Sendable {
     public let programMatchingType: String
     /// torne のひな形の作り手の値
     public let torneCreatorID: String
-    /// 予約で送る録画先（画質によらず内蔵の HDD）。録画はこの値の HDD に入る（torne mobile HB 1.4.4 の実測）。
-    /// torne のひな形は 3 倍で外付け（USBHDD）を送るが、外付けに入った録画は一覧に出ない・再生できないことがあるので送らない
-    public let recordDestination: String
+    /// 予約で送る録画先の値（内蔵）。録画はこの値の HDD に入る（2026-11-24 に Buffalo 製で確かめた）
+    public let internalRecordDestination: String
+    /// 予約で送る録画先の値（外付け）。torne は外付けがあると画質によらずこの値を送る（2026-11-24 実測）
+    public let externalRecordDestination: String
     /// 録画の保護の印の要素（一覧の item の子。0 = 保護なし・1 = 保護）
     public let titleProtectElement: String
+    /// 繰り返しの値（`scheduledConditionID`）
+    public let repeats: ScheduleRepeatValues
     static let flagOn = "1"
     static let flagOff = "0"
 
@@ -384,29 +387,68 @@ public struct XSRSRequestVocabulary: Sendable {
             #"<item id="">"#,
             "<scheduledStartDateTime>\(NasneDateTime.format(schedule.start))</scheduledStartDateTime>",
             "<scheduledDuration>\(schedule.durationSeconds)</scheduledDuration>",
-            "<scheduledConditionID>\(XMLTree.escapeText(schedule.conditionID))</scheduledConditionID>",
+            "<scheduledConditionID>\(XMLTree.escapeText(conditionID(schedule.repeatMode, creating: true)))</scheduledConditionID>",
             #"<scheduledChannelID broadcastingType="\#(channel.broadcastingType)" channelType="\#(channel.channelType)">"#
                 + "\(channel.serviceIDHex)</scheduledChannelID>",
             "<desiredQualityMode>\(schedule.desiredQualityMode)</desiredQualityMode>",
             #"<desiredMatchingID type="\#(programMatchingType)">"# + "\(schedule.desiredMatchingID)</desiredMatchingID>",
             "<reservationCreatorID>\(XMLTree.escapeText(schedule.reservationCreatorID ?? torneCreatorID))</reservationCreatorID>",
             "<priorityFlag>\(schedule.priorityFlag)</priorityFlag>",
-            "<recordDestinationID>\(XMLTree.escapeText(recordDestination))</recordDestinationID>",
+            "<recordDestinationID>\(XMLTree.escapeText(destinationID(schedule.recordDestination)))</recordDestinationID>",
             "</item>",
         ]
         return wrap(elements.joined(separator: Self.creationElementSeparator))
     }
 
-    /// 疎な更新の文書（変える項目と priorityFlag だけ。並びは torne mobile HB と同じ。画質を変えるときは録画先も送る）
+    /// 繰り返しの値。作るときの一回録画は空（こちらがこれまで送ってきた形。nasne は `1` として保存する）、
+    /// 変更で一回録画に戻すときは `once` の値（2026-11-24 に書き込んで確かめた）
+    public func conditionID(_ repeatMode: ScheduleRepeat, creating: Bool) -> String {
+        switch repeatMode {
+        case .once: creating ? "" : repeats.once
+        case .daily: repeats.daily
+        case .mondayToSaturday: repeats.mondayToSaturday
+        case .mondayToFriday: repeats.mondayToFriday
+        case .weekly(let weekday): repeats.weeklyPrefix + String(weekday)
+        }
+    }
+
+    /// 一覧の繰り返しの値を読む（空と `once` は一回録画）。知らない値は nil（呼び方を作らない）
+    public func scheduleRepeat(conditionID raw: String) -> ScheduleRepeat? {
+        let value = raw.trimmingCharacters(in: .whitespaces)
+        switch value {
+        case "", repeats.once: return .once
+        case repeats.daily: return .daily
+        case repeats.mondayToSaturday: return .mondayToSaturday
+        case repeats.mondayToFriday: return .mondayToFriday
+        default:
+            // 毎週は接頭辞と曜日 1 桁（日曜 0〜土曜 6）
+            guard value.hasPrefix(repeats.weeklyPrefix), value.count == repeats.weeklyPrefix.count + 1,
+                  let weekday = Int(value.dropFirst(repeats.weeklyPrefix.count)), ScheduleRepeat.weekdays.contains(weekday)
+            else { return nil }
+            return .weekly(weekday: weekday)
+        }
+    }
+
+    /// 録画先の値
+    public func destinationID(_ destination: RecordDestination) -> String {
+        switch destination {
+        case .internalHDD: internalRecordDestination
+        case .externalHDD: externalRecordDestination
+        }
+    }
+
+    /// 疎な更新の文書（変える項目と priorityFlag だけ。並びは torne mobile HB と同じ。画質を変えるときは録画先も送る。
+    /// 録画先は予約の今の値のまま（変えない）。今の値が空なら内蔵の値）
     public func document(for update: ScheduleUpdate) -> String {
         var item = #"<item id="\#(XMLTree.escapeAttribute(update.id))">"#
-        if let conditionID = update.conditionID {
-            item += "<scheduledConditionID>\(XMLTree.escapeText(conditionID))</scheduledConditionID>"
+        if let repeatMode = update.repeatMode {
+            item += "<scheduledConditionID>\(XMLTree.escapeText(conditionID(repeatMode, creating: false)))</scheduledConditionID>"
         }
         if let mode = update.desiredQualityMode { item += "<desiredQualityMode>\(mode)</desiredQualityMode>" }
         item += "<priorityFlag>\(update.priorityFlag)</priorityFlag>"
         if update.desiredQualityMode != nil {
-            item += "<recordDestinationID>\(XMLTree.escapeText(recordDestination))</recordDestinationID>"
+            let destination = update.recordDestinationID.flatMap { $0.isEmpty ? nil : $0 } ?? internalRecordDestination
+            item += "<recordDestinationID>\(XMLTree.escapeText(destination))</recordDestinationID>"
         }
         item += "</item>"
         return wrap(item)
@@ -441,6 +483,21 @@ public struct XSRSRequestVocabulary: Sendable {
         namespace: "urn:schemas-xsrs-org:metadata-1-0/x_srs/",
         programMatchingType: "SI_PROGRAMID",
         torneCreatorID: "2000",
-        recordDestination: "HDD",
-        titleProtectElement: "titleProtectFlag")
+        internalRecordDestination: "HDD",
+        externalRecordDestination: "USBHDD",
+        titleProtectElement: "titleProtectFlag",
+        repeats: .base)
+}
+
+/// 予約の繰り返しの値（`scheduledConditionID`。公式の torne® mobile で作った予約を読んで分かった形。2026-11-23・Buffalo 製）
+public struct ScheduleRepeatValues: Sendable {
+    /// 一回録画（こちらが空で作った予約はこの値で保存されていた。変更で一回録画に戻すときに送る）
+    public let once: String
+    public let daily: String
+    public let mondayToSaturday: String
+    public let mondayToFriday: String
+    /// 毎週（この後に 1 回目の曜日の数〔日曜 0〜土曜 6〕が付く）
+    public let weeklyPrefix: String
+
+    static let base = ScheduleRepeatValues(once: "1", daily: "d", mondayToSaturday: "w16", mondayToFriday: "w15", weeklyPrefix: "w")
 }

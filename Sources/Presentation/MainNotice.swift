@@ -72,17 +72,19 @@ public struct MainNotice: Identifiable, Hashable, Sendable {
 
 /// モデルの状態から知らせを作る決まり
 public enum MainNotices {
-    /// nasne を探している・見つからない
-    public static func connection(_ state: NasneConnectionState) -> MainNotice? {
-        switch state {
-        case .connected:
-            return nil
-        case .searching:
+    /// nasne を探している・見つからない。探し直しの結果（`state`）と、集約ステータスの見回りが決めた届くか（`link`）を合わせて 1 つにする
+    /// （2026-11-24。探し直しが同じアドレスで見つけても、集約ステータスが読めない間は見つからないと出す）。
+    /// `hasGivenUp` はオフラインのまま自動の読み直しを止めたか
+    public static func connection(_ state: NasneConnectionState, link: NasneLinkState = .online,
+                                  hasGivenUp: Bool = false) -> MainNotice? {
+        if state == .searching {
             return MainNotice(id: "connection", kind: .progress, title: "nasne に届かないので探しています…")
-        case .notFound:
-            return MainNotice(id: "connection", kind: .error, title: "nasne が見つかりません",
-                              detail: "電源とネットワークを確かめてください。", action: .retryConnection)
         }
+        guard state == .notFound || link == .offline else { return nil }
+        let detail = hasGivenUp
+            ? "しばらく見つからないので、自動で確かめるのを止めました。電源とネットワークを確かめて、「探し直す」を押してください。"
+            : "電源とネットワークを確かめてください。"
+        return MainNotice(id: "connection", kind: .error, title: "nasne が見つかりません", detail: detail, action: .retryConnection)
     }
 
     /// 録画一覧：読み込み中・更新中・読み込めなかった・更新できなかった（前の一覧を出している）・削除している・保護を切り替えている

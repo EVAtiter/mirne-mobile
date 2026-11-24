@@ -24,6 +24,8 @@ public enum NasneRelocationTrigger: String, Sendable {
     case requestFailed
     /// 帯の「探し直す」を押した
     case manual
+    /// 集約ステータスが続けて読めず、オフラインになった（2026-11-24。オフラインになったときに 1 回だけ）
+    case statusLost
 }
 
 /// ネットワークの経路の要約（NWPath から作る。試験できるように Network に依存させない）
@@ -52,7 +54,7 @@ public enum NasneRelocationPolicy {
                                    sinceLastCheck: Duration?) -> Bool {
         guard !isChecking else { return false }
         switch trigger {
-        case .launch, .networkChange, .manual:
+        case .launch, .networkChange, .manual, .statusLost:
             return true
         case .requestFailed:
             guard let sinceLastCheck else { return true }

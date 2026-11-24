@@ -102,9 +102,18 @@ public final class RecordingsModel {
     /// 1 段目（録画一覧と新しい録画の番組の情報）を読み直す。局の一覧は読み直さず、2 段目（全件の番組の情報。約 11 秒）は、
     /// 新しい録画が多くて 1 件ずつ補えなかったときだけ読む。まだ一覧を出していない・取り直している途中は何もしない
     public func refreshIfChanged() async {
-        guard titles.value != nil, !isRefreshing else { return }
+        guard liveStatus.allowsNasneRequests, titles.value != nil, !isRefreshing else { return }
         guard tracker.needsRefresh(observed: observedGeneration, now: now()) else { return }
         await reload(waitsForMetadata: false, automatic: true)
+    }
+
+    /// 一覧をまだ出していなければ、保存した一覧を出す（無ければ何もしない）
+    private func showSavedListIfEmpty() async {
+        guard titles.value == nil, let saved = await library?.titleList(udn: services.registration.udn) else { return }
+        titles = .loaded(saved.titles)
+        fetchedAt = saved.fetchedAt
+        counts = saved.counts
+        isShowingSavedList = true
     }
 
     /// 録画の視聴の状態（手元の記録と nasne の値を合わせたもの）
@@ -113,7 +122,10 @@ public final class RecordingsModel {
     }
 
     /// 録画を再生させてよいか（この起動で nasne から一覧を取り直した後だけ）
-    public var canPlay: Bool { titles.value != nil && !isShowingSavedList }
+    public var canPlay: Bool { titles.value != nil && !isShowingSavedList && !isOffline }
+
+    /// nasne に届かないか（つながっていない間は再生・削除・保護をさせない。2026-11-24）
+    public var isOffline: Bool { !liveStatus.allowsNasneRequests }
 
     /// 並べ替えと絞り込みをした一覧
     public var visibleTitles: [RecordedTitle] { arrange(titles.value ?? []) }
@@ -207,6 +219,11 @@ public final class RecordingsModel {
     /// `automatic` は見回りからの読み直し（局の一覧を読み直さず、2 段目は要るときだけ）
     public func reload(waitsForMetadata: Bool = true, automatic: Bool = false) async {
         guard !isRefreshing else { return }
+        // つながっていない間は nasne から読まず、保存した一覧があればそれだけを出す（つながったら読み直す）
+        guard liveStatus.allowsNasneRequests else {
+            await showSavedListIfEmpty()
+            return
+        }
         // 世代は一覧より先に控える（読んでいる間に変わったら、次の見回りで世代の違いとして見つかる）
         let listGeneration = observedGeneration
         // 走っている 2 段目は捨てる（結果を使わない）
@@ -218,14 +235,8 @@ public final class RecordingsModel {
         defer { isRefreshingAutomatically = false }
         let udn = services.registration.udn
         if titles.value == nil {
-            if let saved = await library?.titleList(udn: udn) {
-                titles = .loaded(saved.titles)
-                fetchedAt = saved.fetchedAt
-                counts = saved.counts
-                isShowingSavedList = true
-            } else {
-                titles = .loading
-            }
+            await showSavedListIfEmpty()
+            if titles.value == nil { titles = .loading }
         }
         // 件数と上限・局の一覧・録画一覧を同時に読む。件数と局の並びは、取れなくても一覧は出す。
         // 局の一覧はほかの画面と共通で、読み直すとほかの画面も新しくなる（読み直しに失敗したら前の一覧のまま）
@@ -318,13 +329,13 @@ public final class RecordingsModel {
     /// 録画を消せないときの理由（消せるなら nil）
     public func deletionBlocker(_ title: RecordedTitle) -> RecordingDeletion.Blocker? {
         RecordingDeletion.blocker(title, isShowingSavedList: isShowingSavedList, isDeleting: deletingID != nil,
-                                  isProtecting: protectingID != nil, isRefreshing: isRefreshing)
+                                  isProtecting: protectingID != nil, isRefreshing: isRefreshing, isOffline: isOffline)
     }
 
     /// 保護を切り替えられないときの理由（切り替えられるなら nil）
     public func protectionBlocker(_ title: RecordedTitle) -> RecordingProtection.Blocker? {
         RecordingProtection.blocker(title, isShowingSavedList: isShowingSavedList, isDeleting: deletingID != nil,
-                                    isProtecting: protectingID != nil, isRefreshing: isRefreshing)
+                                    isProtecting: protectingID != nil, isRefreshing: isRefreshing, isOffline: isOffline)
     }
 
     /// 録画の保護を切り替える（`protect` が真なら保護する）。自動で再試行しない。
@@ -437,6 +448,8 @@ public enum RecordingDeletion {
         case protecting
         /// 一覧を取り直している途中（取り直しの後に消すと、消えたかを読み直して確かめられないため）
         case refreshing
+        /// nasne に届かない（2026-11-24）
+        case offline
 
         public var text: String {
             switch self {
@@ -446,14 +459,16 @@ public enum RecordingDeletion {
             case .deleting: "ほかの録画を削除しています"
             case .protecting: "録画の保護を切り替えています"
             case .refreshing: "一覧を更新しています"
+            case .offline: RecordingOffline.text
             }
         }
     }
 
     public static func blocker(_ title: RecordedTitle, isShowingSavedList: Bool, isDeleting: Bool = false,
-                               isProtecting: Bool = false, isRefreshing: Bool = false) -> Blocker? {
+                               isProtecting: Bool = false, isRefreshing: Bool = false, isOffline: Bool = false) -> Blocker? {
         if title.isProtected { return .protected }
         if title.isRecording { return .recording }
+        if isOffline { return .offline }
         if isShowingSavedList { return .savedList }
         if isDeleting { return .deleting }
         if isProtecting { return .protecting }
@@ -465,6 +480,11 @@ public enum RecordingDeletion {
     public static let stillListed = ErrorPresentation(
         title: "録画が一覧に残っています",
         message: "nasne は削除を受け付けましたが、一覧から消えていません。一覧を更新して確かめてください。")
+}
+
+/// nasne に届かないときの、録画の操作を押せない理由（再生・削除・保護で同じ文言）
+public enum RecordingOffline {
+    public static let text = "nasne が見つかりません。つながると操作できます"
 }
 
 /// 録画の保護の切り替えの決まり（画面と試験で同じものを使う）
@@ -480,6 +500,8 @@ public enum RecordingProtection {
         case protecting
         /// 一覧を取り直している途中
         case refreshing
+        /// nasne に届かない（2026-11-24）
+        case offline
 
         public var text: String {
             switch self {
@@ -488,13 +510,15 @@ public enum RecordingProtection {
             case .deleting: "録画を削除しています"
             case .protecting: "ほかの録画の保護を切り替えています"
             case .refreshing: "一覧を更新しています"
+            case .offline: RecordingOffline.text
             }
         }
     }
 
     public static func blocker(_ title: RecordedTitle, isShowingSavedList: Bool, isDeleting: Bool = false,
-                               isProtecting: Bool = false, isRefreshing: Bool = false) -> Blocker? {
+                               isProtecting: Bool = false, isRefreshing: Bool = false, isOffline: Bool = false) -> Blocker? {
         if title.isRecording { return .recording }
+        if isOffline { return .offline }
         if isShowingSavedList { return .savedList }
         if isDeleting { return .deleting }
         if isProtecting { return .protecting }
@@ -602,6 +626,8 @@ public enum RecordingPlayPanel: Sendable, Equatable {
         public static let savedListFailed = "一覧を読み込めませんでした。「もう一度読み込む」を押すと再生できます"
         public static let starting = "再生を始めています…"
         public static let noResource = "この録画には再生できる画質がありません"
+        /// nasne に届かない（2026-11-24）
+        public static let offline = RecordingOffline.text
     }
 
     /// 「最初から」の文字
@@ -615,8 +641,9 @@ public enum RecordingPlayPanel: Sendable, Equatable {
     ///   この起動で一度取り直した一覧なら、後の取り直しが失敗しても押せる。2026-11-20 に決めた）・再生を始めている途中・再生できる版が無い
     /// - まだ取り直せていないときの理由は、取り直している途中（`isRefreshing`）か、失敗した後かで分ける（2026-11-20 に決めた）
     public static func make(title: RecordedTitle?, state: ViewingState, canPlay: Bool, isStarting: Bool,
-                            isRefreshing: Bool = false) -> RecordingPlayPanel {
+                            isRefreshing: Bool = false, isOffline: Bool = false) -> RecordingPlayPanel {
         guard let title else { return .blocked(Reason.noSelection) }
+        guard !isOffline else { return .blocked(Reason.offline) }
         guard canPlay else { return .blocked(isRefreshing ? Reason.savedList : Reason.savedListFailed) }
         guard !isStarting else { return .blocked(Reason.starting) }
         guard let original = title.originalResource else { return .blocked(Reason.noResource) }

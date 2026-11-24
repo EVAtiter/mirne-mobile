@@ -1,7 +1,7 @@
 import SwiftUI
 
 // iPad のメニュー（iPadOS 26 からのメニューバーと、⌘ を押し続けると出るキーボードのショートカットの一覧）。
-// 主画面の操作だけを置く：設定（⌘,）・ライブで見る（⌘L）・新規予約（⌘N）・検索（⌘F）・画面の切り替え（⌘1〜5）。
+// 主画面の操作だけを置く：設定（⌘,）・ライブで見る（⌘L）・マニュアル予約（⌘N）・検索（⌘F）・画面の切り替え（⌘1〜5）。
 // 再生の画面の文字だけのキー（スペース・←→ など）は、再生の画面が自分で受ける（メニューには置かない）。
 // 頼みは macOS と同じく `MainCommandCenter` に置き、主画面が受け取って行う
 
@@ -15,13 +15,15 @@ struct IPadCommands: Commands {
             IPadCommandButton(environment: environment, title: "設定…", request: .settings, section: nil)
                 .keyboardShortcut(",", modifiers: .command)
         }
-        // ファイル：ライブで見る・新規予約
+        // ファイル：ライブで見る・マニュアル予約
         CommandGroup(replacing: .newItem) {
             IPadCommandButton(environment: environment, title: "ライブで見る", request: .watchLive, section: nil)
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(environment.live == nil)
-            IPadCommandButton(environment: environment, title: "新規予約…", request: .newSchedule, section: .schedules)
-                .keyboardShortcut("n", modifiers: .command)
+            if ManualScheduleLabel.isOffered {
+                IPadCommandButton(environment: environment, title: ManualScheduleLabel.title + "…", request: .newSchedule, section: .schedules)
+                    .keyboardShortcut("n", modifiers: .command)
+            }
         }
         // 編集：検索（録画の検索欄へ移る）
         CommandGroup(after: .textEditing) {

@@ -121,6 +121,8 @@ struct RecordingsView: View {
                 }
             }
             .compactListTopMargin()
+            // 一覧を送り始めたら検索のキーボードを閉じる（iPhone のキーボードには閉じるボタンが無い。Mac には効かない。2026-11-24）
+            .scrollDismissesKeyboard(.immediately)
             // 行のダブルクリック・Return（iPad は行のダブルタップ）で、カードの最初の再生のボタンと同じ再生。まとめの行は 1 回のクリック（タップ）で開閉する（上）。
             // 右クリックのメニューは「保護」（保護した録画は「解除」）と「削除…」（1 件ずつ。押せないときは理由を添える）。
             // 長押しのメニュー（iPad）も同じ。視聴の画面を開けないときは、行のダブルクリックで再生しない
@@ -167,7 +169,7 @@ struct RecordingsView: View {
     private func panel(for title: RecordedTitle?) -> RecordingPlayPanel {
         RecordingPlayPanel.make(title: title, state: title.map { model.viewingState(of: $0) } ?? .unwatched,
                                 canPlay: model.canPlay, isStarting: environment.playback.state.isStarting,
-                                isRefreshing: model.isRefreshing)
+                                isRefreshing: model.isRefreshing, isOffline: model.isOffline)
     }
 
     /// カードに出す再生のボタンと、押せないときの理由。押せないとき（一覧の取り直しの途中・再生を始めている途中など）も
@@ -273,20 +275,21 @@ struct RecordingsFilterBar: View {
     @Environment(AppEnvironment.self) private var environment
     /// 検索欄に打てる状態か（編集のメニューの「検索」〔⌘F〕で移る）
     @FocusState private var searchFocused: Bool
-    /// 狭い幅の形（視聴の状態と並べ替えを絵のメニューにする）
-    @Environment(\.usesCompactLayout) private var compact
-
     var body: some View {
         // 画面の上の帯（ScreenActionBar）の左に 1 段で並べる（前は一覧の上に 2 段）。検索の欄は並べ替えの右（2026-11-21）
         HStack(spacing: ScreenActionBarLayout.spacing) {
             // 絞り込みに先に幅を渡す（同じ優先度だと検索の欄と幅を分け合い、窓が広くても「番組名でまとめる」が絵だけになった）
             filters
                 .layoutPriority(1)
-            // 窓が狭いときは検索の欄から縮める（固定の幅だと、最小の窓で帯がはみ出して「更新」が切れた）
-            searchField
-                .frame(minWidth: RecordingsFilterBarLayout.searchMinimumWidth, idealWidth: RecordingsFilterBarLayout.searchWidth,
-                       maxWidth: RecordingsFilterBarLayout.searchWidth)
+            // 窓が狭いときは検索の欄から縮める（固定の幅だと、最小の窓で帯がはみ出して「更新」が切れた）。
+            // Mac は窓のタイトルの帯の右に置く（2026-11-24 の試作）
+            if MainSearchPlacement.inScreenBar {
+                searchField
+                    .frame(minWidth: RecordingsFilterBarLayout.searchMinimumWidth, idealWidth: RecordingsFilterBarLayout.searchWidth,
+                           maxWidth: RecordingsFilterBarLayout.searchWidth)
+            }
         }
+        .mainToolbarSearch(text: $model.searchText, focused: $searchFocused, prompt: RecordingsFilterBarLayout.searchPrompt)
         .onChange(of: environment.mainCommands.pending, initial: true) {
             if environment.mainCommands.consume(.searchRecordings) { searchFocused = true }
         }
@@ -296,52 +299,34 @@ struct RecordingsFilterBar: View {
 
     /// 番組名・局名で絞る（ツールバーの `.searchable` から移した。2026-11-20）
     private var searchField: some View {
-        BarSearchFieldChrome {
-            TextField("番組名・局名", text: $model.searchText)
-                .focused($searchFocused)
-                .textFieldStyle(.plain)
-            if !model.searchText.isEmpty {
-                Button { model.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("検索の文字を消す")
-            }
-        }
+        BarSearchField(prompt: RecordingsFilterBarLayout.searchPrompt, text: $model.searchText, focused: $searchFocused)
     }
 
-    /// 視聴の状態・まとめる・並べ替え。メニューの見出し（「視聴の状態」「並べ替え」）は出さない（2026-11-21。マウスを載せると説明が出る）。
-    /// 入らなければ「番組名でまとめる」を絵だけにする（最小の窓では文字が途中で切れた）
-    @ViewBuilder
+    /// 視聴の状態・まとめる・並べ替え。どの幅も絵のメニューと絵だけのボタン（2026-11-24 に Mac・iPad の広い幅も iPhone と同じ形にした。
+    /// 前は広い幅では文字のメニュー〔「すべて」「新しい順」など〕。狭い幅は 2026-11-23 から絵。文字のメニューのままでは検索の欄に「更新」が重なった）。
+    /// メニューの中の項目と文字はどの幅も同じ。名前はマウスを載せた説明と読み上げの名前で出す
     private var filters: some View {
-        if compact {
-            compactFilters
-        } else {
-            ViewThatFits(in: .horizontal) {
-                filters(groupTitle: true)
-                filters(groupTitle: false)
-            }
-        }
-    }
-
-    /// 狭い幅の形：視聴の状態と並べ替えを絵のメニューに、「番組名でまとめる」を絵だけにする（2026-11-23。
-    /// 文字のメニューのままでは検索の欄に「更新」が重なった）。メニューの中の項目と文字は広い幅と同じ
-    private var compactFilters: some View {
         HStack(spacing: RecordingsFilterBarLayout.spacing) {
             Menu {
                 Picker("視聴の状態", selection: $model.viewingFilter) {
                     ForEach(RecordingsModel.ViewingFilter.allCases, id: \.self) { Text(RecordingViewingFilterLabel.text($0)).tag($0) }
                 }
             } label: {
-                // 絞っている間は塗った絵
+                // 絞っている間は塗った絵。円の中の線が小さく見えるので一段大きく描く（2026-11-24。ほかの絵は大きさを変えない）
                 Image(systemName: model.viewingFilter == .all ? RecordingsFilterSymbol.viewing : RecordingsFilterSymbol.viewingActive)
+                    .imageScale(RecordingsFilterSymbol.viewingScale)
             }
+            .menuIndicator(.hidden)
             .barButtonChrome()
+            .fixedSize()
             .accessibilityLabel("視聴の状態：\(RecordingViewingFilterLabel.text(model.viewingFilter))")
+            .help("視聴の状態：\(RecordingViewingFilterLabel.text(model.viewingFilter))（まだ見ていない録画・途中まで見た録画だけを出す）")
             Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)
                 .barToggleChrome(isOn: model.groupsByName)
                 .fixedSize()
+                .help("同じ番組名の録画を 1 行にまとめる（番組マーク・話数・副題を除いた名前で）")
             Menu {
                 Picker("並べ替え", selection: $model.sortOrder) {
                     ForEach(RecordingsModel.SortOrder.allCases, id: \.self) { Text(RecordingSortLabel.text($0)).tag($0) }
@@ -349,37 +334,13 @@ struct RecordingsFilterBar: View {
             } label: {
                 Image(systemName: RecordingsFilterSymbol.sort)
             }
+            .menuIndicator(.hidden)
             .barButtonChrome()
+            .fixedSize()
             .accessibilityLabel("並べ替え：\(RecordingSortLabel.text(model.sortOrder))")
+            .help("並べ替え：\(RecordingSortLabel.text(model.sortOrder))")
         }
         .fixedSize()
-    }
-
-    private func filters(groupTitle: Bool) -> some View {
-        HStack(spacing: RecordingsFilterBarLayout.spacing) {
-            Picker("視聴の状態", selection: $model.viewingFilter) {
-                ForEach(RecordingsModel.ViewingFilter.allCases, id: \.self) { Text(RecordingViewingFilterLabel.text($0)).tag($0) }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .barMenuChrome()
-            .help("視聴の状態：まだ見ていない録画・途中まで見た録画だけを出す")
-            Toggle(isOn: $model.groupsByName) { Label("番組名でまとめる", systemImage: RecordingsFilterSymbol.group) }
-                .toggleStyle(.button)
-                .labelStyle(groupTitle ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly))
-                .barToggleChrome(isOn: model.groupsByName)
-                .fixedSize()
-                .help("同じ番組名の録画を 1 行にまとめる（番組マーク・話数・副題を除いた名前で）")
-            Picker("並べ替え", selection: $model.sortOrder) {
-                ForEach(RecordingsModel.SortOrder.allCases, id: \.self) { Text(RecordingSortLabel.text($0)).tag($0) }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .barMenuChrome()
-            .help("並べ替え")
-        }
     }
 }
 
@@ -428,6 +389,8 @@ enum RecordingsFilterSymbol {
     static let viewing = "line.3.horizontal.decrease.circle"
     /// 視聴の状態（未再生・途中までに絞っているとき）
     static let viewingActive = "line.3.horizontal.decrease.circle.fill"
+    /// 視聴の状態の絵の大きさ（円の中の線が隣の絵より小さく見えるので一段大きく。2026-11-24 に候補から選んだ）
+    static let viewingScale = Image.Scale.large
     static let sort = "arrow.up.arrow.down"
     static let group = "rectangle.stack"
 }
@@ -438,6 +401,8 @@ enum RecordingsFilterBarLayout {
     /// 検索の欄の幅（帯の左に 1 段で並べるので幅を決める）。窓が狭いときは最小の幅まで縮む。
     /// 200 から広げた（2026-11-21）。広げすぎると、帯が件数と取得日時を出せる窓の幅が広くなる（帯は左の操作がこの幅で入るときだけ出す）
     static let searchWidth: CGFloat = 240
+    /// 検索の欄の見本の文字（帯の中の欄と、Mac の窓のタイトルの帯の欄で同じもの）
+    static let searchPrompt = "番組名・局名"
     static let searchMinimumWidth: CGFloat = 100
 }
 

@@ -60,6 +60,11 @@ enum GuideGenreCategory: UInt8, CaseIterable, Identifiable {
         self = GuideGenreCategory(rawValue: genre.major) ?? .other
     }
 
+    /// 番組のジャンルがこの大分類か（番組の検索をジャンルで絞る。ジャンルの無い番組はどの大分類でもない）
+    func includes(_ genre: ProgramGenre?) -> Bool {
+        genre.map { GuideGenreCategory($0) == self } ?? false
+    }
+
     var name: LocalizedStringKey {
         switch self {
         case .news: "ニュース／報道"

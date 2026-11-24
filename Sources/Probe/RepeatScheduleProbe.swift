@@ -5,28 +5,38 @@ import Foundation
 //   mirne-mobile-probe repeat-schedule --host <nasne> --at "yyyy-MM-dd HH:mm"                          （選んで形を見るだけ。何も送らない）
 //   mirne-mobile-probe repeat-schedule --host <nasne> --at "yyyy-MM-dd HH:mm" --set d --send            （変更で繰り返しの値を入れる。1 回だけ送る）
 //   mirne-mobile-probe repeat-schedule --host <nasne> --at "yyyy-MM-dd HH:mm" --recreate w15 --send     （消して、同じ番組で繰り返しの値を入れて作り直す。消す 1 回・作る 1 回）
+//   mirne-mobile-probe repeat-schedule --host <nasne> --at "yyyy-MM-dd HH:mm" --set 1 --quality x3 --send  （繰り返しの値と画質を 1 回の変更で一緒に送る。録画先は今の値のまま）
 //
 // 守ること:
 // - **使う人が作った試しの予約だけを、そのたび確かめてから書き換える。** 予約は始まる分（日本時間）で 1 件に決まり、
 //   番組に紐付いていて、まだ始まっていないときだけ選ぶ。`--send` が無ければ、選んだ予約の形と送る値を出すだけで何も送らない
 // - 送るのは NasneKit の予約の変更・削除・作成（アプリと同じ経路）だけ。自動で再試行しない
-// - 繰り返しの値は公式のアプリで読んだ形（d・w と曜日 1〜2 桁）だけを受け付ける
+// - 繰り返しの値は読んだ形（1・d・w と曜日 1〜2 桁）だけを受け付ける
 // - 番組名・予約の ID・局・eventId の値は出さない。出すのは繰り返しの値・長さ・画質・件数・応答の形だけ
 
 @MainActor
 enum RepeatScheduleCommand {
     /// 送った後に読み直すまでの間（すぐの読み直しに加えて、遅れて変わらないかを見る）
     static let recheckDelay: Duration = .seconds(2)
-    /// 受け付ける繰り返しの値（公式のアプリで作った予約で読んだ形：d = 毎日・w + 曜日〔日曜 0〕1 桁 = 毎週・2 桁 = その曜日からその曜日まで）
-    static let conditionPattern = "^(d|w[0-6]{1,2})$"
+    /// 受け付ける繰り返しの値（公式のアプリで作った予約で読んだ形：d = 毎日・w + 曜日〔日曜 0〕1 桁 = 毎週・2 桁 = その曜日からその曜日まで。
+    /// 1 = 一回録画〔こちらが空で作った予約は 1 で保存されていた〕。繰り返しから一回録画へ戻す変更を測るために足した）
+    static let conditionPattern = "^(1|d|w[0-6]{1,2})$"
 
     static func run() async throws {
         guard let at = option("--at") else { fail("--at \"yyyy-MM-dd HH:mm\"（日本時間で予約の始まる分）で試しの予約を指定する") }
         let set = option("--set")
         let recreate = option("--recreate")
         if set != nil && recreate != nil { fail("--set と --recreate はどちらか 1 つ") }
+        // 画質も一緒に変える（--set と組で使う）
+        let quality: Int? = switch option("--quality") {
+        case nil: nil
+        case "dr": QualityMode.dr
+        case "x3": QualityMode.threeTimes
+        case let other?: fail("--quality \(other) は受け付けない（dr か x3）")
+        }
+        if quality != nil && set == nil { fail("--quality は --set と一緒に使う") }
         for value in [set, recreate].compactMap({ $0 }) where value.range(of: conditionPattern, options: .regularExpression) == nil {
-            fail("繰り返しの値 \(value) は受け付けない（d・w と曜日 1〜2 桁だけ）")
+            fail("繰り返しの値 \(value) は受け付けない（1・d・w と曜日 1〜2 桁だけ）")
         }
 
         let (device, _) = try await connect(requiredHost())
@@ -44,7 +54,8 @@ enum RepeatScheduleCommand {
         guard schedule.start > Date() else { fail("始まった予約には送らない") }
 
         if let set {
-            say("送る値: 変更で繰り返しの値を \(show(schedule.conditionID)) → \(set)")
+            say("送る値: 変更で繰り返しの値を \(show(schedule.conditionID)) → \(set)"
+                + (quality.map { "・画質を \(QualityMode.label(schedule.desiredQualityMode)) → \(QualityMode.label($0))（録画先は今の値のまま）" } ?? ""))
         } else if let recreate {
             say("送る値: 消してから、同じ番組・長さ・画質で繰り返しの値 \(recreate) の予約を作る")
         } else {
@@ -59,7 +70,9 @@ enum RepeatScheduleCommand {
         if let set {
             let start = Date()
             do {
-                try await catalog.update(ScheduleUpdate(id: schedule.id, priorityFlag: schedule.priorityFlag, conditionID: set))
+                try await catalog.update(ScheduleUpdate(id: schedule.id, priorityFlag: schedule.priorityFlag,
+                                                        repeatMode: repeatMode(set, catalog: catalog),
+                                                        desiredQualityMode: quality, recordDestinationID: schedule.recordDestinationID))
                 say("\(catalog.profile.soap.updateRecordSchedule.name): 通った（\(elapsed(start))）")
             } catch {
                 say("\(catalog.profile.soap.updateRecordSchedule.name): 断られた（\(elapsed(start))）・\(error)")
@@ -75,7 +88,10 @@ enum RepeatScheduleCommand {
             guard let channel = channels.first(where: { $0.serviceID == schedule.channel.serviceID }) else { fail("局の一覧に予約の局が無い") }
             var draft = NewRecordSchedule(start: schedule.start, durationSeconds: schedule.durationSeconds, channel: schedule.channel,
                                           networkID: channel.networkID, eventID: eventID, desiredQualityMode: schedule.desiredQualityMode)
-            draft.conditionID = recreate
+            draft.repeatMode = repeatMode(recreate, catalog: catalog)
+            // 録画先は元の予約のまま
+            draft.recordDestination = schedule.recordDestinationID == catalog.profile.xsrs.externalRecordDestination
+                ? .externalHDD : .internalHDD
 
             var start = Date()
             do {
@@ -119,8 +135,14 @@ enum RepeatScheduleCommand {
         if now.priorityFlag != before.priorityFlag { changed.append("priorityFlag") }
         if now.recordDestinationID != before.recordDestinationID { changed.append("録画先") }
         if (now.title == nil) != (before.title == nil) { changed.append("番組名の有無") }
-        say("\(label): 一覧 \(schedules.count) 件・繰り返しの値 \(show(now.conditionID))・ほかに元の予約と違う項目 \(changed.isEmpty ? "なし" : changed.joined(separator: " "))")
+        say("\(label): 一覧 \(schedules.count) 件・繰り返しの値 \(show(now.conditionID))・画質 \(QualityMode.label(now.desiredQualityMode))・ほかに元の予約と違う項目 \(changed.isEmpty ? "なし" : changed.joined(separator: " "))")
     }
 
     static func show(_ conditionID: String) -> String { conditionID.isEmpty ? "（空）" : conditionID }
+
+    /// 繰り返しの値を、アプリと同じ表で繰り返しの種類にする（表で読めない値は送らない）
+    static func repeatMode(_ value: String, catalog: RecordingCatalogService) -> ScheduleRepeat {
+        guard let mode = catalog.profile.xsrs.scheduleRepeat(conditionID: value) else { fail("繰り返しの値 \(value) は表に無い") }
+        return mode
+    }
 }

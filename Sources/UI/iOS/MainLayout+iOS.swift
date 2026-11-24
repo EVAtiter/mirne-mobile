@@ -28,6 +28,8 @@ struct MainTabContainer<Notice: View, Content: View>: View {
     @ViewBuilder let notice: () -> Notice
     @ViewBuilder let content: (MainSection) -> Content
     @Environment(\.horizontalSizeClass) private var sizeClass
+    /// nasne に届くか（オフラインなら「情報」のタブにバッジ）
+    @Environment(\.nasneLink) private var link
 
     var body: some View {
         TabView(selection: $selection) {
@@ -41,6 +43,7 @@ struct MainTabContainer<Notice: View, Content: View>: View {
                         }
                         .environment(\.horizontalSizeClass, sizeClass)
                 }
+                .badge(section.showsOfflineBadge(link) ? Text(OfflineBadge.text) : nil)
             }
         }
         .environment(\.horizontalSizeClass, .compact)

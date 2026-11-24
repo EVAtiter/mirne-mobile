@@ -8,14 +8,14 @@ import Testing
 
 /// xsrs の予約の item（素材の schedule_list_one.xml と同じ形。番組名は入れない）
 private func scheduleItem(id: Int, start: String, duration: Int = 300, serviceID: Int = 0x41f0, eventID: Int = 0,
-                          quality: Int = QualityMode.dr) -> String {
+                          quality: Int = QualityMode.dr, destination: String = "HDD", condition: String = "1") -> String {
     """
     <item id="\(id)"><scheduledStartDateTime>\(start)</scheduledStartDateTime>\
-    <scheduledDuration>\(duration)</scheduledDuration><scheduledConditionID>1</scheduledConditionID>\
+    <scheduledDuration>\(duration)</scheduledDuration><scheduledConditionID>\(condition)</scheduledConditionID>\
     <scheduledChannelID broadcastingType="2" channelType="2">\(String(format: "0x%04x", serviceID))</scheduledChannelID>\
     <desiredMatchingID type="SI_PROGRAMID">0x7e00,0x7e00,\(String(format: "0x%04x", serviceID)),\(String(format: "0x%04x", eventID))</desiredMatchingID>\
     <desiredQualityMode>\(quality)</desiredQualityMode><reservationCreatorID>2000</reservationCreatorID>\
-    <priorityFlag>0</priorityFlag><recordDestinationID>HDD</recordDestinationID></item>
+    <priorityFlag>0</priorityFlag><recordDestinationID>\(destination)</recordDestinationID></item>
     """
 }
 
@@ -46,6 +46,8 @@ private final class FixedSchedules: ScheduleService, Sendable {
         var conflictError: NasneError?
         var createError: NasneError?
         var conflictCalls = 0
+        /// 重なる予約の確かめで送った予約
+        var checked: [NewRecordSchedule] = []
         var created: [NewRecordSchedule] = []
         var updates: [ScheduleUpdate] = []
         var deleted: [String] = []
@@ -62,6 +64,7 @@ private final class FixedSchedules: ScheduleService, Sendable {
     func setConflictError(_ error: NasneError?) { state.withLock { $0.conflictError = error } }
     func setCreateError(_ error: NasneError?) { state.withLock { $0.createError = error } }
     var conflictCalls: Int { state.withLock { $0.conflictCalls } }
+    var checked: [NewRecordSchedule] { state.withLock { $0.checked } }
     var created: [NewRecordSchedule] { state.withLock { $0.created } }
     var updates: [ScheduleUpdate] { state.withLock { $0.updates } }
     var deleted: [String] { state.withLock { $0.deleted } }
@@ -77,6 +80,7 @@ private final class FixedSchedules: ScheduleService, Sendable {
     func conflicts(for schedule: NewRecordSchedule) async throws -> [RecordSchedule] {
         let (conflicts, error) = state.withLock { state -> ([RecordSchedule], NasneError?) in
             state.conflictCalls += 1
+            state.checked.append(schedule)
             return (state.conflicts, state.conflictError)
         }
         if let error { throw error }
@@ -93,9 +97,9 @@ private final class FixedSchedules: ScheduleService, Sendable {
     func update(_ update: ScheduleUpdate) async throws {
         let error = state.withLock { state -> NasneError? in
             state.updates.append(update)
-            if state.updateError == nil, state.reflectsUpdates, let mode = update.desiredQualityMode,
-               let index = state.list.firstIndex(where: { $0.id == update.id }) {
-                state.list[index].desiredQualityMode = mode
+            if state.updateError == nil, state.reflectsUpdates, let index = state.list.firstIndex(where: { $0.id == update.id }) {
+                if let mode = update.desiredQualityMode { state.list[index].desiredQualityMode = mode }
+                if let repeatMode = update.repeatMode { state.list[index].repeatMode = repeatMode }
             }
             return state.updateError
         }
@@ -131,13 +135,18 @@ private struct NamedChannels: DeviceInfoService {
     var fails = false
     /// 世代を返す（nil なら集約ステータスは読めない）
     var live: FakeLiveGenerations?
+    /// HDD の一覧（nil なら読めない）
+    var hdds: [HDDEntry]? = []
     func channels(broadcastingType: Int) async throws -> [Channel] {
         if fails { throw NasneError.unreachable("webapi:/status/channelListGet", cause: URLError(.timedOut)) }
         return [Channel(broadcastingType: BroadcastingType.terrestrial, networkID: 0x7E00, transportStreamID: 0x7E00,
                         serviceID: 0x41f0, serviceType: Channel.televisionServiceType, channelNumber: 1, serviceName: "テスト局1")]
     }
     func deviceInfo() async throws -> DeviceInfo { throw NasneError.validation("test", "使わない") }
-    func hddList() async throws -> [HDDEntry] { [] }
+    func hddList() async throws -> [HDDEntry] {
+        guard let hdds else { throw NasneError.unreachable("webapi:/status/HDDListGet", cause: URLError(.timedOut)) }
+        return hdds
+    }
     func hddInfo(id: Int) async throws -> HDDInfo { throw NasneError.validation("test", "使わない") }
     func liveStatus() async throws -> LiveStatus {
         guard let live else { throw NasneError.validation("test", "使わない") }
@@ -184,7 +193,7 @@ struct SchedulesModelTests {
 
     @Test("開始の早い順（同じ開始は局の serviceID の順）に並べ、局名を引く。引けない局は serviceID のまま")
     func sortsAndNames() async throws {
-        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(), initialLink: .online))
         await model.reload()
         #expect(model.sortedSchedules.map(\.id) == ["2", "1", "3"])
         #expect(model.channelName(model.sortedSchedules[0].channel) == "テスト局1")
@@ -194,7 +203,7 @@ struct SchedulesModelTests {
 
     @Test("局名が読めなくても予約の一覧は出す")
     func channelFailureKeepsList() async throws {
-        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels(fails: true)), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(fails: true)))
+        let model = SchedulesModel(schedules: FixedSchedules(try schedules(sample)), channels: ChannelCatalog(deviceInfo: NamedChannels(fails: true)), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(fails: true), initialLink: .online))
         await model.reload()
         #expect(model.sortedSchedules.count == 3)
         #expect(model.channelName(model.sortedSchedules[0].channel) == "サービス 0x41f0")
@@ -203,7 +212,7 @@ struct SchedulesModelTests {
     @Test("予約が読めなければ失敗を出す。選んだ予約は、読み直して無くなれば外す")
     func failureAndSelection() async throws {
         let service = FixedSchedules(try schedules(sample))
-        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(), initialLink: .online))
         await model.reload()
         model.selectedID = "3"
         #expect(model.selectedSchedule?.id == "3")
@@ -228,7 +237,7 @@ struct SchedulesModelTests {
         let live = FakeLiveGenerations()
         live.set(85)
         let device = NamedChannels(live: live)
-        let monitor = LiveStatusMonitor(deviceInfo: device)
+        let monitor = LiveStatusMonitor(deviceInfo: device, initialLink: .online)
         let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: monitor)
         await monitor.poll()
         await model.refreshIfChanged()
@@ -255,16 +264,72 @@ struct SchedulesModelTests {
         #expect(model.schedules.value?.map(\.id) == ["2"])
     }
 
-    @Test("集約ステータスの見回り：読めたら世代を持ち、読めなければ nil にする（古い世代のまま変わっていないと見なさない）")
+    @Test("集約ステータスの見回り：読めたら世代を持ってつながる。2 回続けて読めなければオフラインにして世代を nil にする（1 回の取りこぼしでは消さない）。読めたら戻る")
     func monitorDropsGenerationOnFailure() async {
         let live = FakeLiveGenerations()
         let monitor = LiveStatusMonitor(deviceInfo: NamedChannels(live: live))
+        #expect(monitor.link == .checking)
+        #expect(!monitor.isOnline)
         live.set(85)
         await monitor.poll()
         #expect(monitor.generations?.schedules == 85)
+        #expect(monitor.link == .online)
         live.set(nil)
         await monitor.poll()
+        #expect(monitor.generations?.schedules == 85)   // 1 回目はまだ消さない
+        #expect(monitor.link == .online)
+        await monitor.poll()
         #expect(monitor.generations == nil)
+        #expect(monitor.link == .offline)
+        live.set(86)
+        await monitor.poll()
+        #expect(monitor.generations?.schedules == 86)
+        #expect(monitor.link == .online)
+    }
+
+    @Test("起動したときに 2 回続けて読めなければ、確かめている状態からオフラインになる")
+    func monitorStartsOffline() async {
+        let monitor = LiveStatusMonitor(deviceInfo: NamedChannels(live: FakeLiveGenerations()))
+        await monitor.poll()
+        #expect(monitor.link == .checking)
+        await monitor.poll()
+        #expect(monitor.link == .offline)
+    }
+
+    @Test("読み直しの間：つながっている間は 2 秒、読めなかった直後はすぐ、オフラインは 1 分まで 5 秒・その後 30 秒、10 分で止める")
+    func linkPolicy() {
+        #expect(NasneLinkPolicy.nextDelay(link: .online, failures: 0, offlineFor: nil) == LiveStatusMonitorTiming.interval)
+        #expect(NasneLinkPolicy.nextDelay(link: .online, failures: 1, offlineFor: nil) == .zero)
+        #expect(NasneLinkPolicy.nextDelay(link: .checking, failures: 0, offlineFor: nil) == LiveStatusMonitorTiming.interval)
+        #expect(NasneLinkPolicy.nextDelay(link: .checking, failures: 1, offlineFor: nil) == .zero)
+        #expect(NasneLinkPolicy.nextDelay(link: .offline, failures: 2, offlineFor: .seconds(0)) == .seconds(5))
+        #expect(NasneLinkPolicy.nextDelay(link: .offline, failures: 5, offlineFor: .seconds(59)) == .seconds(5))
+        #expect(NasneLinkPolicy.nextDelay(link: .offline, failures: 9, offlineFor: .seconds(60)) == .seconds(30))
+        #expect(NasneLinkPolicy.nextDelay(link: .offline, failures: 20, offlineFor: .seconds(599)) == .seconds(30))
+        #expect(NasneLinkPolicy.nextDelay(link: .offline, failures: 21, offlineFor: .seconds(600)) == nil)
+    }
+
+    @Test("つながっていない間は予約の一覧を読まず、前に読んだ一覧を残す")
+    func offlineKeepsList() async throws {
+        let service = FixedSchedules(try schedules(sample))
+        let live = FakeLiveGenerations()
+        live.set(85)
+        let device = NamedChannels(live: live)
+        let monitor = LiveStatusMonitor(deviceInfo: device)
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: monitor)
+        await model.reload()
+        #expect(model.schedules == .idle)   // 確かめる前は読まない
+        await monitor.poll()
+        await model.reload()
+        #expect(model.schedules.value?.count == 3)
+        live.set(nil)
+        await monitor.poll()
+        await monitor.poll()
+        #expect(monitor.link == .offline)
+        service.setFails(true)
+        await model.reload()
+        await model.refreshIfChanged()
+        #expect(model.schedules.value?.count == 3)   // 失敗にせず、前の一覧のまま
     }
 
     @Test("読み直すかの判断：世代が読めれば前と違うときだけ。読めなければ前に読んでから決まった間が経ったら。まだ読んでいなければ読む")
@@ -286,7 +351,7 @@ struct SchedulesModelTests {
         let live = FakeLiveGenerations()   // 読めない
         let device = NamedChannels(live: live)
         let clock = Mutex(Date(timeIntervalSince1970: 0))
-        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: LiveStatusMonitor(deviceInfo: device),
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: device), liveStatus: LiveStatusMonitor(deviceInfo: device, initialLink: .online),
                                    now: { clock.withLock { $0 } })
         await model.reload()
         service.set(try schedules(Array(sample.suffix(2))))
@@ -322,7 +387,7 @@ private let creationNow = Date(timeIntervalSince1970: 1_795_174_890)
 @MainActor
 @Suite("手動の予約の作成")
 struct ScheduleCreationTests {
-    @Test("ひな形：日時は +09:00 のコロン形、録画先は画質によらず内蔵（HDD）、matchingID は ,,nid,eventId、番組名は送らない")
+    @Test("ひな形：日時は +09:00 のコロン形、録画先は画質によらず予約の値（既定は内蔵 HDD・外付けは USBHDD）、matchingID は ,,nid,eventId、番組名は送らない")
     func template() throws {
         let start = try #require(NasneDateTime.parse("2026-11-20T21:00:00+09:00"))
         var schedule = NewRecordSchedule(start: start, durationSeconds: 3600,
@@ -346,6 +411,44 @@ struct ScheduleCreationTests {
         #expect(threeTimes.contains("<desiredQualityMode>230</desiredQualityMode>"))
         #expect(threeTimes.contains("<recordDestinationID>HDD</recordDestinationID>"))
         #expect(!threeTimes.contains("USBHDD"))
+        schedule.recordDestination = .externalHDD
+        schedule.desiredQualityMode = QualityMode.dr
+        let external = NasneProfiles.standard.xsrs.document(for: schedule)
+        #expect(external.contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+        #expect(external.contains("<desiredQualityMode>100</desiredQualityMode>"))
+    }
+
+    @Test("録画先：外付けが登録・マウントされていれば外付け。外付けが無い・つながっていない・一覧が読めなければ内蔵")
+    func recordDestinationChoice() async {
+        let internalDisk = HDDEntry(id: HDDIdentity.internalID, isInternal: true, isMounted: true, isRegistered: true)
+        let external = HDDEntry(id: 1, isInternal: false, isMounted: true, isRegistered: true)
+        #expect(RecordDestination.preferred(for: [internalDisk]) == .internalHDD)
+        #expect(RecordDestination.preferred(for: [internalDisk, external]) == .externalHDD)
+        var unmounted = external
+        unmounted.isMounted = false
+        #expect(RecordDestination.preferred(for: [internalDisk, unmounted]) == .internalHDD)
+        var unregistered = external
+        unregistered.isRegistered = false
+        #expect(RecordDestination.preferred(for: [internalDisk, unregistered]) == .internalHDD)
+        #expect(await RecordDestination.preferred(from: NamedChannels(hdds: [internalDisk, external])) == .externalHDD)
+        #expect(await RecordDestination.preferred(from: NamedChannels(hdds: nil)) == .internalHDD)
+    }
+
+    @Test("作成のモデルは送る直前に録画先を決め、重なる予約の確かめと作成に同じ値を送る。決め方を渡さなければ内蔵")
+    func creationSendsResolvedDestination() async throws {
+        let service = FixedSchedules()
+        service.setConflicts(try schedules([scheduleItem(id: 9, start: "2026-11-20T21:30:00+09:00")]))
+        let model = ScheduleCreationModel(channels: creationChannels, service: service, destination: { .externalHDD },
+                                          now: { creationNow })
+        await model.submit()
+        await model.confirmConflicts()
+        #expect(service.checked.map(\.recordDestination) == [.externalHDD])
+        #expect(service.created.map(\.recordDestination) == [.externalHDD])
+
+        let plain = FixedSchedules()
+        let defaulted = ScheduleCreationModel(channels: creationChannels, service: plain, now: { creationNow })
+        await defaulted.submit()
+        #expect(plain.created.map(\.recordDestination) == [.internalHDD])
     }
 
     @Test("競合の確認は重なる予約を読み、作成は応答の 0x を外した ID を返す")
@@ -507,7 +610,7 @@ struct ScheduleCreationTests {
 @MainActor
 @Suite("予約の変更・削除")
 struct ScheduleWriteTests {
-    @Test("画質の変更は疎な更新：priorityFlag は今の値、画質と録画先（内蔵）だけ。変える項目が無ければ送らない")
+    @Test("画質の変更は疎な更新：priorityFlag は今の値、画質と録画先（予約の今の値のまま）だけ。変える項目が無ければ送らない")
     func qualityUpdateShape() async throws {
         let original = try #require(try schedules([scheduleItem(id: 5, start: "2026-11-21T21:00:00+09:00")]).first)
         let update = ScheduleUpdate.quality(QualityMode.threeTimes, of: original)
@@ -518,6 +621,14 @@ struct ScheduleWriteTests {
         #expect(document.contains("<recordDestinationID>HDD</recordDestinationID>"))
         #expect(!document.contains("scheduledStartDateTime"))
         #expect(!document.contains("scheduledConditionID"))
+        // 外付けの予約の画質を変えても、録画先は外付けのまま。録画先が空なら内蔵
+        let external = try #require(try schedules([scheduleItem(id: 6, start: "2026-11-21T21:00:00+09:00",
+                                                                 destination: "USBHDD")]).first)
+        let keeps = NasneProfiles.standard.xsrs.document(for: ScheduleUpdate.quality(QualityMode.threeTimes, of: external))
+        #expect(keeps.contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+        let empty = NasneProfiles.standard.xsrs.document(
+            for: ScheduleUpdate(id: "6", priorityFlag: 0, desiredQualityMode: QualityMode.dr, recordDestinationID: ""))
+        #expect(empty.contains("<recordDestinationID>HDD</recordDestinationID>"))
 
         let http = MockHTTP()
         let catalog = RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
@@ -591,7 +702,7 @@ struct ScheduleWriteTests {
     func deleteReloads() async throws {
         let list = try schedules(sample)
         let service = FixedSchedules(list)
-        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels()))
+        let model = SchedulesModel(schedules: service, channels: ChannelCatalog(deviceInfo: NamedChannels()), liveStatus: LiveStatusMonitor(deviceInfo: NamedChannels(), initialLink: .online))
         await model.reload()
         #expect(await model.delete(list[0]) == nil)
         #expect(model.sortedSchedules.count == 2)
@@ -620,30 +731,170 @@ struct ScheduleMarksTests {
     @Test("番組に紐付けた予約は、帯域・serviceID・eventId が同じ番組にだけ付く（時刻は見ない）")
     func linked() throws {
         let marks = ScheduleMarks(try schedules([scheduleItem(id: 1, start: "2026-11-21T21:00:00+09:00", duration: 3600, eventID: 0x1234)]))
-        #expect(marks.isReserved(try event(id: 0x1234, start: "2026-11-21T21:05:00+09:00", minutes: 54), on: station))
+        #expect(marks.mark(try event(id: 0x1234, start: "2026-11-21T21:05:00+09:00", minutes: 54), on: station) != nil)
         // 同じ時間の別の番組には付けない
-        #expect(!marks.isReserved(try event(id: 0x1235, start: "2026-11-21T21:00:00+09:00", minutes: 60), on: station))
+        #expect(marks.mark(try event(id: 0x1235, start: "2026-11-21T21:00:00+09:00", minutes: 60), on: station) == nil)
         // 別の局の同じ eventId には付けない
         var other = station
         other.serviceID = 0x41f1
-        #expect(!marks.isReserved(try event(id: 0x1234, start: "2026-11-21T21:05:00+09:00", minutes: 54), on: other))
+        #expect(marks.mark(try event(id: 0x1234, start: "2026-11-21T21:05:00+09:00", minutes: 54), on: other) == nil)
     }
 
     @Test("手動の予約は、同じ局で時間が重なる番組に付く（端が接しているだけは付けない）")
     func manual() throws {
         let marks = ScheduleMarks(try schedules([scheduleItem(id: 2, start: "2026-11-21T21:00:00+09:00", duration: 1800)]))
-        #expect(marks.isReserved(try event(id: 1, start: "2026-11-21T20:45:00+09:00", minutes: 30), on: station))   // 前から重なる
-        #expect(marks.isReserved(try event(id: 2, start: "2026-11-21T21:10:00+09:00", minutes: 60), on: station))   // 後ろへ重なる
-        #expect(!marks.isReserved(try event(id: 3, start: "2026-11-21T20:00:00+09:00", minutes: 60), on: station))  // 終わりが接する
-        #expect(!marks.isReserved(try event(id: 4, start: "2026-11-21T21:30:00+09:00", minutes: 30), on: station))  // 始まりが接する
+        #expect(marks.mark(try event(id: 1, start: "2026-11-21T20:45:00+09:00", minutes: 30), on: station) != nil)   // 前から重なる
+        #expect(marks.mark(try event(id: 2, start: "2026-11-21T21:10:00+09:00", minutes: 60), on: station) != nil)   // 後ろへ重なる
+        #expect(marks.mark(try event(id: 3, start: "2026-11-21T20:00:00+09:00", minutes: 60), on: station) == nil)  // 終わりが接する
+        #expect(marks.mark(try event(id: 4, start: "2026-11-21T21:30:00+09:00", minutes: 30), on: station) == nil)  // 始まりが接する
         var other = station
         other.serviceID = 0x41f1
-        #expect(!marks.isReserved(try event(id: 2, start: "2026-11-21T21:10:00+09:00", minutes: 60), on: other))
+        #expect(marks.mark(try event(id: 2, start: "2026-11-21T21:10:00+09:00", minutes: 60), on: other) == nil)
+    }
+
+    @Test("手動の予約が番組の始まりから終わりまでを含めば全体の印、一部だけ重なれば一部の印。番組に紐付けた予約は全体の印")
+    func manualWholeOrPart() throws {
+        let marks = ScheduleMarks(try schedules([scheduleItem(id: 2, start: "2026-11-21T21:00:00+09:00", duration: 1800),
+                                                 scheduleItem(id: 3, start: "2026-11-21T22:00:00+09:00", duration: 600, eventID: 0x55)]))
+        #expect(marks.mark(try event(id: 1, start: "2026-11-21T21:00:00+09:00", minutes: 30), on: station) == .whole)   // ちょうど同じ
+        #expect(marks.mark(try event(id: 2, start: "2026-11-21T21:10:00+09:00", minutes: 10), on: station) == .whole)   // 中に入る
+        #expect(marks.mark(try event(id: 3, start: "2026-11-21T20:45:00+09:00", minutes: 30), on: station) == .part)    // 前から重なる
+        #expect(marks.mark(try event(id: 4, start: "2026-11-21T20:30:00+09:00", minutes: 90), on: station) == .part)    // 予約を含む長い番組
+        #expect(marks.mark(try event(id: 0x55, start: "2026-11-21T22:00:00+09:00", minutes: 60), on: station) == .whole)
     }
 
     @Test("予約が無ければ印は付かない")
     func empty() throws {
         #expect(ScheduleMarks.none.isEmpty)
-        #expect(!ScheduleMarks.none.isReserved(try event(id: 0x1234, start: "2026-11-21T21:00:00+09:00", minutes: 60), on: station))
+        #expect(ScheduleMarks.none.mark(try event(id: 0x1234, start: "2026-11-21T21:00:00+09:00", minutes: 60), on: station) == nil)
     }
+}
+
+@MainActor
+@Suite("繰り返しの予約")
+struct ScheduleRepeatTests {
+    @Test("値の表：毎日 d・月〜土 w16・月〜金 w15・毎週 w と曜日。作るときの一回録画は空、変更で戻すときは 1。読むときは空と 1 が一回録画、知らない値は nil")
+    func vocabulary() {
+        let xsrs = NasneProfiles.standard.xsrs
+        #expect(xsrs.conditionID(.once, creating: true) == "")
+        #expect(xsrs.conditionID(.once, creating: false) == "1")
+        #expect(xsrs.conditionID(.daily, creating: true) == "d")
+        #expect(xsrs.conditionID(.mondayToSaturday, creating: true) == "w16")
+        #expect(xsrs.conditionID(.mondayToFriday, creating: false) == "w15")
+        #expect(xsrs.conditionID(.weekly(weekday: 2), creating: true) == "w2")
+        #expect(xsrs.scheduleRepeat(conditionID: "") == .once)
+        #expect(xsrs.scheduleRepeat(conditionID: "1") == .once)
+        #expect(xsrs.scheduleRepeat(conditionID: "d") == .daily)
+        #expect(xsrs.scheduleRepeat(conditionID: "w16") == .mondayToSaturday)
+        #expect(xsrs.scheduleRepeat(conditionID: "w15") == .mondayToFriday)
+        #expect(xsrs.scheduleRepeat(conditionID: "w0") == .weekly(weekday: 0))
+        #expect(xsrs.scheduleRepeat(conditionID: "w7") == nil)
+        #expect(xsrs.scheduleRepeat(conditionID: "w35") == nil)
+        #expect(xsrs.scheduleRepeat(conditionID: "x") == nil)
+    }
+
+    @Test("作成の文書には繰り返しの値、変更の文書には変えるときだけ繰り返しの値（画質と一緒にも）")
+    func documents() throws {
+        let start = try #require(NasneDateTime.parse("2026-11-24T21:00:00+09:00"))   // 火曜
+        var schedule = NewRecordSchedule(start: start, durationSeconds: 1800,
+                                         channel: ScheduleChannel(broadcastingType: 2, channelType: 2, serviceID: 0x4010),
+                                         networkID: 0x7E01, eventID: 0x10)
+        #expect(NasneProfiles.standard.xsrs.document(for: schedule).contains("<scheduledConditionID></scheduledConditionID>"))
+        schedule.repeatMode = .weekly(weekday: ScheduleRepeat.weekday(of: start))
+        #expect(NasneProfiles.standard.xsrs.document(for: schedule).contains("<scheduledConditionID>w2</scheduledConditionID>"))
+        let back = NasneProfiles.standard.xsrs.document(for: ScheduleUpdate(id: "5", priorityFlag: 0, repeatMode: .once))
+        #expect(back.contains("<scheduledConditionID>1</scheduledConditionID>"))
+        #expect(!back.contains("desiredQualityMode"))
+        let both = NasneProfiles.standard.xsrs.document(
+            for: ScheduleUpdate(id: "5", priorityFlag: 0, repeatMode: .mondayToFriday, desiredQualityMode: QualityMode.threeTimes,
+                                recordDestinationID: "USBHDD"))
+        #expect(both.contains("<scheduledConditionID>w15</scheduledConditionID>"))
+        #expect(both.contains("<desiredQualityMode>230</desiredQualityMode>"))
+        #expect(both.contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+        let quality = NasneProfiles.standard.xsrs.document(for: ScheduleUpdate(id: "5", priorityFlag: 0, desiredQualityMode: QualityMode.dr))
+        #expect(!quality.contains("scheduledConditionID"))
+    }
+
+    @Test("曜日は日本時間で数える（日曜 0）")
+    func weekday() throws {
+        // 日本時間の月曜 0:30 は UTC では日曜
+        let monday = try #require(NasneDateTime.parse("2026-11-23T00:30:00+09:00"))
+        #expect(ScheduleRepeat.weekday(of: monday) == 1)
+        #expect(ScheduleRepeat.choices(startingAt: monday).last == .weekly(weekday: 1))
+    }
+
+    @Test("繰り返しを選べるのは番組表からの予約だけ。手動の予約は選んでも一回録画で送る")
+    func creationOffersRepeatForProgramOnly() throws {
+        let manual = ScheduleCreationModel(channels: [Channel(broadcastingType: 2, networkID: 0x7E01, transportStreamID: 0x7E01,
+                                                              serviceID: 0x4010, serviceType: Channel.televisionServiceType,
+                                                              channelNumber: 1, serviceName: "テスト局1")],
+                                           service: RepeatOnlySchedules(), now: { Date(timeIntervalSince1970: 1_795_000_000) })
+        #expect(!manual.offersRepeat)
+        #expect(manual.repeatChoices == [.once])
+        manual.repeatMode = .daily
+        #expect(manual.draft?.repeatMode == .once)
+
+        let start = Date(timeIntervalSince1970: 1_795_000_000 + 3600)
+        let event = BroadcastEvent(tableID: 0x50, serviceID: 0x4010, eventID: 9, start: start, duration: 1800,
+                                   title: "テスト番組", text: "", lossless: true)
+        let station = Channel(broadcastingType: 2, networkID: 0x7E01, transportStreamID: 0x7E01, serviceID: 0x4010,
+                              serviceType: Channel.televisionServiceType, channelNumber: 1, serviceName: "テスト局1")
+        let program = try #require(ScheduleProgram(station: station, event: event))
+        let model = ScheduleCreationModel(program: program, service: RepeatOnlySchedules(),
+                                          now: { Date(timeIntervalSince1970: 1_795_000_000) })
+        #expect(model.offersRepeat)
+        #expect(model.repeatChoices.count == 5)
+        #expect(model.draft?.repeatMode == .once)
+        model.repeatMode = .mondayToFriday
+        #expect(model.draft?.repeatMode == .mondayToFriday)
+    }
+
+    @Test("変更：繰り返しを変えたら画質と 1 回で送り、読み直した値で確かめる。知らない値・手動の予約は繰り返しを変えさせない")
+    func editRepeat() async throws {
+        let list = try repeatSchedules(eventID: 0x10, condition: "d")
+        let service = RepeatOnlySchedules(list)
+        let model = ScheduleEditModel(original: list[0], service: service)
+        #expect(model.offersRepeatChange)
+        #expect(model.repeatMode == .daily)
+        #expect(!model.hasChange)
+        model.repeatMode = .once
+        model.qualityMode = QualityMode.threeTimes
+        await model.submit()
+        #expect(service.updates.count == 1)
+        #expect(service.updates.first?.repeatMode == .once)
+        #expect(service.updates.first?.desiredQualityMode == QualityMode.threeTimes)
+        #expect(model.phase == .finished(reflected: true))
+
+        let unknown = try repeatSchedules(eventID: 0x10, condition: "w35")
+        #expect(!ScheduleEditModel(original: unknown[0], service: RepeatOnlySchedules(unknown)).offersRepeatChange)
+        #expect(ScheduleRepeatText.badge(unknown[0]) == "繰り返し w35")
+        let manual = try repeatSchedules(eventID: 0, condition: "1")
+        #expect(!ScheduleEditModel(original: manual[0], service: RepeatOnlySchedules(manual)).offersRepeatChange)
+        #expect(ScheduleRepeatText.badge(manual[0]) == nil)
+        #expect(ScheduleRepeatText.badge(list[0]) == "毎日")
+    }
+}
+
+/// 繰り返しの試験の素材（予約 1 件）
+private func repeatSchedules(eventID: Int, condition: String) throws -> [RecordSchedule] {
+    try schedules([scheduleItem(id: 5, start: "2026-11-24T21:00:00+09:00", eventID: eventID, condition: condition)])
+}
+
+/// 変更を受けたら一覧に映す偽の予約のサービス（繰り返しの試験用）
+private final class RepeatOnlySchedules: ScheduleService, Sendable {
+    private let state: Mutex<(list: [RecordSchedule], updates: [ScheduleUpdate])>
+    init(_ list: [RecordSchedule] = []) { state = Mutex((list, [])) }
+    var updates: [ScheduleUpdate] { state.withLock { $0.updates } }
+    func schedules() async throws -> [RecordSchedule] { state.withLock { $0.list } }
+    func conflicts(for schedule: NewRecordSchedule) async throws -> [RecordSchedule] { [] }
+    func create(_ schedule: NewRecordSchedule) async throws -> String { "1" }
+    func update(_ update: ScheduleUpdate) async throws {
+        state.withLock { state in
+            state.updates.append(update)
+            guard let index = state.list.firstIndex(where: { $0.id == update.id }) else { return }
+            if let mode = update.desiredQualityMode { state.list[index].desiredQualityMode = mode }
+            if let repeatMode = update.repeatMode { state.list[index].repeatMode = repeatMode }
+        }
+    }
+    func delete(id: String) async throws {}
 }

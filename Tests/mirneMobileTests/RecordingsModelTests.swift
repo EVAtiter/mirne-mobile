@@ -51,7 +51,7 @@ struct RecordingsModelTests {
             MockHTTP.Reply(status: 200, body: Data(#"{"errorcode":0,"recContentsList":{"generation":\#(generation.withLock { $0 })}}"#.utf8))
         }
         let services = try services(http)
-        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        let monitor = LiveStatusMonitor(deviceInfo: services.deviceInfo, initialLink: .online)
         let model = RecordingsModel(services: services, liveStatus: monitor)
         func count(_ path: String) -> Int { http.sentRequests.filter { $0.url?.path == path }.count }
         await monitor.poll()
@@ -574,6 +574,12 @@ struct RecordingDeletionTests {
         #expect(RecordingDeletion.blocker(other, isShowingSavedList: false, isDeleting: true) == .deleting)
         #expect(RecordingDeletion.blocker(other, isShowingSavedList: false, isRefreshing: true) == .refreshing)
         #expect(RecordingDeletion.blocker(other, isShowingSavedList: false) == nil)
+        // nasne に届かない間は、削除・保護・再生をさせない（保護・録画中は先に言う）
+        #expect(RecordingDeletion.blocker(other, isShowingSavedList: false, isOffline: true) == .offline)
+        #expect(RecordingDeletion.blocker(protected, isShowingSavedList: false, isOffline: true) == .protected)
+        #expect(RecordingProtection.blocker(other, isShowingSavedList: true, isOffline: true) == .offline)
+        #expect(RecordingPlayPanel.make(title: other, state: .unwatched, canPlay: false, isStarting: false, isOffline: true)
+                == .blocked(RecordingPlayPanel.Reason.offline))
     }
 }
 

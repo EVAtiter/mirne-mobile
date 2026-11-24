@@ -53,10 +53,10 @@ struct RootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let services = environment.services, let channels = environment.channels {
+            if let services = environment.services, let channels = environment.channels, let liveStatus = environment.liveStatus {
                 // nasne を探している知らせは、主ウインドウの知らせの帯（MainView）に出す
                 // アドレスが変わって作り直したら、主ウインドウも開き直す（画面のモデルが前の部品を持っているため）
-                MainView(services: services, channels: channels, logos: environment.channelLogos, library: environment.library, viewing: environment.viewing,
+                MainView(services: services, liveStatus: liveStatus, channels: channels, logos: environment.channelLogos, library: environment.library, viewing: environment.viewing,
                          openViewer: { openWindow(id: ViewerWindowID.main) })
                     .id(MainViewIdentity(udn: services.registration.udn, host: services.registration.host))
             } else {

@@ -20,8 +20,8 @@ DTCP-IP or other technologies, and it gives no warranty of non-infringement.
 
 ## Features
 
-- **Program guide (番組表)**: shows the nasne's digital terrestrial program guide for 8 days, with station logos. Scheduled programs are marked. Click a program for its details and schedule a recording from there. On the Mac, swipe on a trackpad or Magic Mouse to move it diagonally as well
-- **Schedules (予約)**: list, create (by station and time, or from a program in the guide), change the quality of, and delete recording schedules. Overlapping schedules are checked before creating one. Each row starts with the station logo, and the selected schedule is shown in an information card
+- **Program guide (番組表)**: shows the nasne's digital terrestrial program guide for 8 days, with station logos. Scheduled programs are marked. Click a program for its details and schedule a recording from there. The search field in the bar at the top finds upcoming programs by title and short description (you can narrow it down by genre). On the Mac, swipe on a trackpad or Magic Mouse, or drag with the mouse, to move it diagonally as well
+- **Schedules (予約)**: list, create (from a program in the guide), change the quality and repeat of, and delete recording schedules. Repeat can be once, daily, Mon–Sat, Mon–Fri, or weekly (一回録画・毎日・月〜土・月〜金・毎週). Overlapping schedules are checked before creating one. When an external HDD is connected, recordings go to it. Each row starts with the station logo, and selecting a schedule opens a sheet with its details and buttons to change or delete it
 - **Recordings (録画)**: search, sort, and group recordings by title. Each row starts with the station logo, and the viewing state (unplayed, in progress, finished) is shown with a mark and a light row color. The selected recording is shown in a card with its information and buttons to play, protect, and delete it. The previous list appears at once and is brought up to date with the nasne in about a second
   - An unfinished recording resumes where you left off. The position is also saved on the nasne and shared with other Macs, iPhones, iPads, and torne (can be turned off in Settings)
   - Recordings can be protected / unprotected and deleted
@@ -33,10 +33,10 @@ DTCP-IP or other technologies, and it gives no warranty of non-infringement.
 - **Live viewing (ライブ)**: watch what is on the air. Change stations from the menu in the controls, ↑↓, or the number keys. While the nasne is recording, live viewing starts on the station being recorded
 - **Info (情報)**: shows the nasne itself, free HDD space, programs being recorded, notices, and schedules that failed to record
 - **Media (メディア)**: watch and listen to videos (MP4), music (MP3, AAC), and photos (JPEG, PNG) placed in the nasne's shared folder. First choose Video, Music, or Photo (ビデオ・ミュージック・フォト), then browse the folders. Videos and music play in the same playback window as recordings (they never play at the same time as a recording or live broadcast; on the Mac, opening one switches the window over), and photos open large and can be stepped through. No credentials are needed. Put files in the shared folder with Finder or the like
-- **Switching screens**: switch between Program guide, Schedules, Recordings, Media, and Info with the tabs floating at the bottom of the window (screen). Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float just above the tabs
-- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. nasne HOME, the nasne's own settings screen, opens in your browser from the nasne section of Settings (ブラウザで開く). The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
-- **iPhone and iPad**: the same program guide, schedules, recordings, info, playback, and live viewing. Tap a recording or schedule to select it and show its card, and double-tap a recording to play it. Playback covers the whole screen; tap to show the controls, and double-tap the left or right half to go 10 seconds back or forward (recordings). Playback stops when the app goes to the background and resumes from the same position when you come back
-  - On a narrow screen such as an iPhone in portrait, the card of the selected recording or schedule opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
+- **Switching screens**: switch between Program guide, Schedules, Recordings, Media, and Info with the switcher in the center of the bar at the top of each screen on the Mac, and with the tabs at the bottom of the screen on the iPhone and iPad. Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float at the bottom center of the window on the Mac, and just above the tabs on the iPhone and iPad
+- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. When the nasne cannot be reached, the app shows only "nasne not found" (nasne が見つかりません), keeps the lists it read before, and disables the actions that talk to the nasne (Info gets a red mark, and Search Again (探し直す) looks for it again). Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. nasne HOME, the nasne's own settings screen, opens in your browser from the nasne section of Settings (ブラウザで開く). The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
+- **iPhone and iPad**: the same program guide, schedules, recordings, info, playback, and live viewing. Tap a recording to select it and show its card, and double-tap it to play it. Tap a schedule to open a sheet with its details and buttons to change or delete it. Playback covers the whole screen; tap to show the controls, and double-tap the left or right half to go 10 seconds back or forward (recordings). Playback stops when the app goes to the background and resumes from the same position when you come back
+  - On a narrow screen such as an iPhone in portrait, the card of the selected recording opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
 
 ## Installation
 
@@ -75,7 +75,7 @@ The same Release also has the source code of FFmpeg that the iPhone and iPad ver
    Credentials (資格情報（DTCP-IP）), choose the two files of a certificate and private key obtained from
    your own device (a `credentials.env` file also works). The program guide, schedules, and recording
    list work without credentials
-3. **Watch**: switch between Program guide, Schedules, Recordings, Media, and Info with the tabs at the bottom of the window.
+3. **Watch**: switch between Program guide, Schedules, Recordings, Media, and Info with the switcher in the center of the bar at the top of each screen on the Mac, or the tabs at the bottom of the screen on the iPhone and iPad.
    Select a recording and press a play button in its card, or double-click its row or press Return. Start live viewing
    with Live (ライブ) at the right end of the bar at the top of the screen or the button next to a station name in the program guide
 
@@ -98,7 +98,7 @@ Main keys in the viewer window:
 | T | Always on top |
 | ⌘0 | Back to the standard size |
 
-In the main window, ⌘1–⌘5 switch screens and ⌘N creates a new schedule. Each screen keeps itself up to date by watching nasne for changes, so there is no refresh button.
+In the main window, ⌘1–⌘5 switch screens. Each screen keeps itself up to date by watching nasne for changes, so there is no refresh button.
 
 On the iPhone and iPad:
 
@@ -111,7 +111,7 @@ On the iPhone and iPad:
 - In the playback screen, tap to show or hide the controls and close it with × at the top left. The
   volume follows the device's volume buttons. With a hardware keyboard, the keys above work, except F,
   Esc, T, and ⌘0
-- With a hardware keyboard, ⌘1–⌘5, ⌘N, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
+- With a hardware keyboard, ⌘1–⌘5, ⌘F (search recordings), ⌘L (live), and ⌘, (settings)
   work in the main screen
 
 ## About DTCP-IP credentials

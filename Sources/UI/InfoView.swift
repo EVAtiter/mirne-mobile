@@ -5,12 +5,18 @@ struct InfoView: View {
     @State var model: InfoModel
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.scenePhase) private var scenePhase
+    /// nasne に届くか（オフラインなら値の代わりに「nasne が見つかりません」と「探し直す」を出す。2026-11-24）
+    @Environment(\.nasneLink) private var link
 
     var body: some View {
         VStack(spacing: 0) {
             // 上の帯（番組表と同じ位置）。情報の画面の操作は無い（右端の「ライブ」「設定」だけ）
             ScreenActionBar(hasLeading: false) { EmptyView() }
-            form
+            if link == .offline {
+                offline
+            } else {
+                form
+            }
         }
         .navigationTitle("情報")
         // 見回り（MainView が回す）が読んだ世代や選局の状態が変わったら読み直す
@@ -38,6 +44,22 @@ struct InfoView: View {
         #endif
         .onChange(of: environment.mainCommands.pending, initial: true) {
         }
+    }
+
+    /// オフラインのとき：値の代わりに出す（前の値は古いので出さない）。探している間は押せない
+    private var offline: some View {
+        ContentUnavailableView {
+            Label("nasne が見つかりません", systemImage: InfoOfflineSymbol.name)
+        } description: {
+            Text("電源と、\(DeviceWording.thisDevice) が nasne と同じネットワークにつながっているかを確かめてください。")
+        } actions: {
+            Button(environment.connection == .searching ? "探しています…" : MainNoticeAction.retryConnection.title) {
+                environment.retryConnection()
+            }
+            .disabled(environment.connection == .searching)
+        }
+        // 残りの高さいっぱいに広げる（macOS では中身の高さにしかならず、上の帯ごと窓の縦の真ん中に寄る）
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var form: some View {
@@ -130,4 +152,9 @@ struct InfoView: View {
     static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .decimal)
     }
+}
+
+/// 情報の画面のオフラインの絵
+enum InfoOfflineSymbol {
+    static let name = "wifi.exclamationmark"
 }

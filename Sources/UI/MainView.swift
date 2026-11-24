@@ -24,7 +24,7 @@ struct MainView: View {
     @State private var lineup: GuideLineupModel
     @State private var schedules: SchedulesModel
     @State private var media: MediaModel
-    /// 集約ステータスの見回り（一覧ごとの世代。各画面のモデルが見る）
+    /// 集約ステータスの見回り（一覧ごとの世代と、nasne に届くか。環境が作り、ここが回す。各画面のモデルが見る）
     @State private var liveStatus: LiveStatusMonitor
     @Environment(\.scenePhase) private var scenePhase
     @State private var credentials = CredentialsModel.live()
@@ -33,17 +33,16 @@ struct MainView: View {
     /// 番組表にサブチャンネルも並べるか（設定。既定は隠す）
     @AppStorage(GuideSettingsKey.showsSubchannels) private var showsSubchannels = false
 
-    init(services: NasneServices, channels: ChannelCatalog, logos: ChannelLogoModel?, library: LibraryStore?, viewing: ViewingRecorder?,
-         openViewer: (() -> Void)?) {
+    init(services: NasneServices, liveStatus: LiveStatusMonitor, channels: ChannelCatalog, logos: ChannelLogoModel?, library: LibraryStore?,
+         viewing: ViewingRecorder?, openViewer: (() -> Void)?) {
         self.services = services
         self.openViewer = openViewer
-        let liveStatus = LiveStatusMonitor(deviceInfo: services.deviceInfo)
         _liveStatus = State(initialValue: liveStatus)
         _info = State(initialValue: InfoModel(services: services, liveStatus: liveStatus))
         _recordings = State(initialValue: RecordingsModel(services: services, channels: channels, library: library, viewing: viewing,
                                                           liveStatus: liveStatus))
         _schedules = State(initialValue: SchedulesModel(schedules: services.schedules, channels: channels, liveStatus: liveStatus))
-        _media = State(initialValue: MediaModel(services: services))
+        _media = State(initialValue: MediaModel(services: services, link: liveStatus))
         _lineup = State(initialValue: GuideLineupModel(
             channels: channels, logos: logos,
             showsSubchannels: UserDefaults.standard.bool(forKey: GuideSettingsKey.showsSubchannels)))
@@ -62,8 +61,24 @@ struct MainView: View {
             .onChange(of: stateNotices) { environment.notices.forgetDismissed(notIn: stateNotices) }
             // 録画一覧は起動したときから読む（録画の画面を開くのを待たない。2026-11-21）
             .task { if case .idle = recordings.titles { await recordings.reload() } }
-            // 集約ステータスの見回りは、アプリが前面にある間だけ（前面でなくなると取り消され、戻るとすぐ読む）
-            .task(id: scenePhase) { if scenePhase == .active { await liveStatus.run() } }
+            // 集約ステータスの見回りは、アプリが前面にある間だけ（前面でなくなると取り消され、戻るとすぐ読む）。
+            // 「探し直す」・ネットワークの切り替わりでも回し直す（オフラインのまま止めた後も）
+            .task(id: LiveStatusRunKey(isActive: scenePhase == .active, token: liveStatus.runToken)) {
+                if scenePhase == .active { await liveStatus.run() }
+            }
+            // 届くかが変わった：つながったら全部読み直し、オフラインになったら 1 回だけ探し直す（アドレスが変わった nasne を見つける）
+            .onChange(of: liveStatus.link) { _, link in
+                switch link {
+                case .online:
+                    environment.noteNasneReachable()
+                    reloadAfterConnecting()
+                case .offline:
+                    environment.checkConnection(.statusLost)
+                case .checking:
+                    break
+                }
+            }
+            .environment(\.nasneLink, liveStatus.link)
             // 録画一覧は、どの画面を開いていても、録画の一覧の世代が変わったら読み直す（ほかの画面の再生・番組表でも使うため）
             .onChange(of: recordings.observedGeneration) { Task { await recordings.refreshIfChanged() } }
             // 予約の一覧も、一度読んだら（予約の画面か番組表を開いたら）どの画面でも世代の変化で読み直す（番組表の予約済みの印のため）
@@ -119,7 +134,7 @@ struct MainView: View {
         .hidesNavigationBar(!layout.showsTitleBar)
         .environment(\.mainTitleBarHidden, !layout.showsTitleBar)
         // 「ライブ」「設定」は各画面の帯の右端に出す（iOS で上の帯を出すときは、上の帯の右端）
-        .environment(\.mainBarAccessories, layout.showsAccessoriesInTitleBar ? nil : barAccessories(layout))
+        .environment(\.mainBarAccessories, layout.showsAccessoriesInTitleBar ? nil : barAccessories)
         .environment(\.mainTitleBarHasActions, layout.showsAccessoriesInTitleBar)
         .toolbar {
             // 番組表の「現在」は上の帯の左（iPhone の縦向き・iPad の狭い分割。2026-11-24）
@@ -131,12 +146,12 @@ struct MainView: View {
                         .help("今の時刻へ送る")
                 }
             }
-            // 予約の「新規予約」は上の帯の左（iPhone の縦向き・iPad の狭い分割。各画面の帯の左端では寄りすぎて見えた。2026-11-24）
-            if layout.showsAccessoriesInTitleBar && selection == .schedules {
+            // 予約の「マニュアル予約」は上の帯の左（iPhone の縦向き・iPad の狭い分割。各画面の帯の左端では寄りすぎて見えた。2026-11-24）
+            if ManualScheduleLabel.isOffered && layout.showsAccessoriesInTitleBar && selection == .schedules {
                 ToolbarItem(placement: .navigation) {
-                    Button { environment.mainCommands.request(.newSchedule) } label: { Label("新規予約", systemImage: "plus") }
+                    Button { environment.mainCommands.request(.newSchedule) } label: { Label(ManualScheduleLabel.title, systemImage: ManualScheduleLabel.symbol) }
                         .labelStyle(.iconOnly)
-                        .disabled(schedules.channels.isEmpty)
+                        .disabled(schedules.channels.isEmpty || !liveStatus.isOnline)
                         .help("時刻を指定して予約する")
                 }
             }
@@ -147,7 +162,7 @@ struct MainView: View {
                         Button { watchLive(nil) } label: { Label("ライブ", systemImage: LiveSymbol.watch) }
                             .labelStyle(.iconOnly)
                             .help("ライブで見る（前に見た局）")
-                            .disabled(environment.live == nil)
+                            .disabled(environment.live == nil || !liveStatus.isOnline)
                     }
                     Button { showsSettings = true } label: { Label("設定", systemImage: MainToolbarSymbol.settings) }
                         .labelStyle(.iconOnly)
@@ -157,13 +172,11 @@ struct MainView: View {
         }
     }
 
-    /// 各画面の帯の右端に出す「ライブ」「設定」。Mac は広い窓なら絵と文字、それ以外は絵だけ（iPad・iPhone はいつも絵だけ。
-    /// `MainWindowLayout.accessoryTitlesWidth` は OS ごと）
-    private func barAccessories(_ layout: MainLayout) -> MainBarAccessories {
+    /// 各画面の帯の右端に出す「ライブ」「設定」（どの OS も絵だけ）
+    private var barAccessories: MainBarAccessories {
         MainBarAccessories(watchLive: watchLive.map { watch in { watch(nil) } },
-                           liveDisabled: environment.live == nil,
-                           openSettings: { showsSettings = true },
-                           showsTitles: !layout.usesCompactLayout && contentWidth >= MainWindowLayout.accessoryTitlesWidth)
+                           liveDisabled: environment.live == nil || !liveStatus.isOnline,
+                           openSettings: { showsSettings = true })
     }
 
     /// 知らせ（読み込み中・誤り・操作の結果。全部の画面のものをここに出す）。切り替えのすぐ上に浮かべる板（2026-11-23。前は窓の下端の帯）
@@ -178,14 +191,14 @@ struct MainView: View {
         case .info: InfoView(model: info)
         case .media: MediaView(model: media, openViewer: openViewer)
         case .recordings: RecordingsView(model: recordings, openViewer: openViewer)
-        case .schedules: SchedulesView(model: schedules, scheduleService: services.schedules)
+        case .schedules: SchedulesView(model: schedules, scheduleService: services.schedules, deviceInfo: services.deviceInfo)
         case .guide:
             if let guide = environment.programGuide {
                 // 狭い幅では時刻の列を詰め、局の列を画面の幅に 2 局収まる幅にする
                 let sizing = GuideLayout.apply(textScale: MainTextSize.saved(textSize).scale,
                                                compactWidth: layout.usesCompactLayout ? contentWidth : nil)
                 GuideView(guide: guide, lineup: lineup,
-                          scheduling: GuideScheduling(service: services.schedules, schedules: schedules) { Task { await schedules.reload() } },
+                          scheduling: GuideScheduling(service: services.schedules, deviceInfo: services.deviceInfo, schedules: schedules) { Task { await schedules.reload() } },
                           live: guideLive,
                           commandCenter: environment.mainCommands)
                     .navigationTitle("番組表")
@@ -219,10 +232,27 @@ struct MainView: View {
         }
     }
 
-    /// 状態から作る知らせ（nasne を探している・各画面の読み込み中と誤り）。画面を開いていなくても出す
+    /// つながったとき（起動して確かめたとき・オフラインから戻ったとき）に、全部の画面のものを読み直す。
+    /// つながる前は各モデルが読まないので、起動したときの読み込みもここから始まる
+    private func reloadAfterConnecting() {
+        Task { await recordings.reload() }
+        Task { await schedules.reload() }
+        Task { await info.reload() }
+        Task { await lineup.load() }
+        Task { await media.reload() }
+        Task { await environment.channelLogos?.refresh() }
+        Task { await environment.programGuide?.refresh() }
+    }
+
+    /// 状態から作る知らせ（nasne を探している・各画面の読み込み中と誤り）。画面を開いていなくても出す。
+    /// つながっていない間は、接続の知らせだけを出す（各画面の読み込みは止まっている。前の誤りも出さない。2026-11-24）
     private var stateNotices: [MainNotice] {
         var notices: [MainNotice] = []
-        if let connection = MainNotices.connection(environment.connection) { notices.append(connection) }
+        if let connection = MainNotices.connection(environment.connection, link: liveStatus.link,
+                                                   hasGivenUp: liveStatus.hasGivenUp) {
+            notices.append(connection)
+        }
+        guard liveStatus.isOnline else { return notices }
         notices += MainNotices.recordings(isLoading: recordings.titles.isLoading, loadError: recordings.titles.error,
                                           isRefreshing: recordings.showsRefreshProgress, refreshError: recordings.refreshError,
                                           isShowingSavedList: recordings.isShowingSavedList, isDeleting: recordings.deletingID != nil,
@@ -245,7 +275,7 @@ struct MainView: View {
     /// 知らせのボタン
     private func perform(_ action: MainNoticeAction) {
         switch action {
-        case .retryConnection: environment.checkConnection(.manual)
+        case .retryConnection: environment.retryConnection()
         case .reloadRecordings: Task { await recordings.reload() }
         case .reloadSchedules: Task { await schedules.reload() }
         case .reloadInfo: Task { await info.reload() }
@@ -254,6 +284,12 @@ struct MainView: View {
         case .reloadMedia: Task { await media.reload() }
         }
     }
+}
+
+/// 集約ステータスの見回りを回す鍵（前面にあるか・始め直しの印。変わったら回し直す）
+private struct LiveStatusRunKey: Hashable {
+    let isActive: Bool
+    let token: Int
 }
 
 /// 主ウインドウを作り直す鍵（登録した nasne と、そのアドレス）
@@ -324,4 +360,14 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .info: "info.circle"
         }
     }
+
+    /// オフラインの印（赤いバッジに白い「!」）を出すか。「情報」だけ（2026-11-24）
+    func showsOfflineBadge(_ link: NasneLinkState) -> Bool {
+        self == .info && link == .offline
+    }
+}
+
+/// オフラインの印の中の文字（iOS は OS のタブのバッジ、Mac は切り替えの絵に重ねる）
+enum OfflineBadge {
+    static let text = "!"
 }

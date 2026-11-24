@@ -99,7 +99,10 @@ public struct RecordSchedule: Sendable, Equatable {
     public var id: String
     public var start: Date
     public var durationSeconds: Int
+    /// 繰り返しの値（読んだまま）
     public var conditionID: String
+    /// 繰り返し（知らない値なら nil。そのときは `conditionID` をそのまま出す）
+    public var repeatMode: ScheduleRepeat?
     public var channel: ScheduleChannel
     public var desiredQualityMode: Int
     public var desiredMatchingID: String
@@ -121,7 +124,7 @@ public struct RecordSchedule: Sendable, Equatable {
     /// 番組に紐付けた予約か（eventId が 0 でない）。手動の予約は終わった後も一覧に残る
     public var isLinkedToProgram: Bool { (eventID ?? 0) != 0 }
 
-    init(item: XSRSItem, source: String) throws {
+    init(item: XSRSItem, source: String, vocabulary: XSRSRequestVocabulary = .base) throws {
         guard let start = NasneDateTime.parse(item["scheduledStartDateTime"]) else {
             throw NasneError.parse(source, "scheduledStartDateTime が読めない")
         }
@@ -136,6 +139,7 @@ public struct RecordSchedule: Sendable, Equatable {
         self.start = start
         durationSeconds = try integer("scheduledDuration")
         conditionID = item["scheduledConditionID"] ?? ""
+        repeatMode = vocabulary.scheduleRepeat(conditionID: conditionID)
         channel = try ScheduleChannel.parse(item, source: source)
         desiredQualityMode = try integer("desiredQualityMode")
         desiredMatchingID = item["desiredMatchingID"] ?? ""
@@ -156,23 +160,76 @@ public struct ScheduleUpdate: Sendable, Equatable {
     public var id: String
     /// 今の値をそのまま送る（必須）
     public var priorityFlag: Int
-    public var conditionID: String?
-    /// 画質。変えるときは、作成と同じ組の録画先も一緒に送る（2026-11-19。組は `XSRSRequestVocabulary` が持つ）
+    /// 繰り返し（変えないなら nil。画質と 1 回の変更で一緒に送れる。2026-11-24 に書き込んで確かめた）
+    public var repeatMode: ScheduleRepeat?
+    /// 画質。変えるときは録画先も一緒に送る（2026-11-19）
     public var desiredQualityMode: Int?
+    /// 画質を変えるときに送る録画先（予約の今の値。変えない。nil か空なら内蔵の値。値は `XSRSRequestVocabulary` が持つ）
+    public var recordDestinationID: String?
 
-    public init(id: String, priorityFlag: Int, conditionID: String? = nil, desiredQualityMode: Int? = nil) {
+    public init(id: String, priorityFlag: Int, repeatMode: ScheduleRepeat? = nil, desiredQualityMode: Int? = nil,
+                recordDestinationID: String? = nil) {
         self.id = id
         self.priorityFlag = priorityFlag
-        self.conditionID = conditionID
+        self.repeatMode = repeatMode
         self.desiredQualityMode = desiredQualityMode
+        self.recordDestinationID = recordDestinationID
     }
 
     /// priorityFlag のほかに変える項目があるか
-    public var hasChange: Bool { conditionID != nil || desiredQualityMode != nil }
+    public var hasChange: Bool { repeatMode != nil || desiredQualityMode != nil }
 
     /// 画質の変更
     public static func quality(_ mode: Int, of schedule: RecordSchedule) -> ScheduleUpdate {
-        ScheduleUpdate(id: schedule.id, priorityFlag: schedule.priorityFlag, desiredQualityMode: mode)
+        ScheduleUpdate(id: schedule.id, priorityFlag: schedule.priorityFlag, desiredQualityMode: mode,
+                       recordDestinationID: schedule.recordDestinationID)
+    }
+}
+
+/// 予約の繰り返し（公式の torne® mobile と同じ 5 つ。送る値・読む値は `XSRSRequestVocabulary` が持つ）。
+/// nasne は録画の後、同じ予約の ID のまま次の回へ書き換える（次の回は番組名で探すと見られる。2026-11-23 に公式で作った予約を読んで測った）
+public enum ScheduleRepeat: Sendable, Hashable {
+    case once
+    case daily
+    case mondayToSaturday
+    case mondayToFriday
+    /// 毎週（1 回目の曜日。日曜 0〜土曜 6）
+    case weekly(weekday: Int)
+
+    /// 曜日の数の範囲（日曜 0〜土曜 6）
+    public static let weekdays = 0...6
+
+    /// 選べる 5 つ（公式と同じ並び。毎週は `start` の曜日）
+    public static func choices(startingAt start: Date) -> [ScheduleRepeat] {
+        [.once, .daily, .mondayToSaturday, .mondayToFriday, .weekly(weekday: weekday(of: start))]
+    }
+
+    /// 日本時間の曜日（日曜 0〜土曜 6）
+    public static func weekday(of date: Date) -> Int {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = NasneDateTime.timeZone
+        return calendar.component(.weekday, from: date) - 1
+    }
+}
+
+/// 予約の録画先（内蔵か外付けか。送る値は `XSRSRequestVocabulary` が持つ）。
+///
+/// 録画は予約の録画先の HDD に入る（2026-11-24 に Buffalo 製で確かめた。外付けを送った予約は、内蔵の空きのほうが
+/// 多くても外付けに入った）。公式の torne は、外付けがつながっていると画質によらず外付けを送り、内蔵・外付けを選ぶ欄は無い。
+/// こちらも同じにする（2026-11-24）
+public enum RecordDestination: Sendable, Equatable {
+    case internalHDD
+    case externalHDD
+
+    /// 作る予約の録画先：外付けが登録・マウントされていれば外付け、無ければ内蔵
+    public static func preferred(for hdds: [HDDEntry]) -> RecordDestination {
+        hdds.contains { !$0.isInternal && $0.isConnected } ? .externalHDD : .internalHDD
+    }
+
+    /// HDD の一覧を読んで決める。読めなければ内蔵（外付けを送っていいかが分からないので、外付けを決め打ちしない）
+    public static func preferred(from deviceInfo: any DeviceInfoService) async -> RecordDestination {
+        guard let hdds = try? await deviceInfo.hddList() else { return .internalHDD }
+        return preferred(for: hdds)
     }
 }
 
@@ -191,11 +248,13 @@ public struct NewRecordSchedule: Sendable, Equatable {
     /// 番組の eventId。0 は時刻を指定した手動の予約
     public var eventID: Int
     public var desiredQualityMode: Int
-    /// 空は nasne の既定（"1" に直して保存される）
-    public var conditionID = ""
+    /// 繰り返し（一回録画は空で送り、nasne が "1" に直して保存する）
+    public var repeatMode = ScheduleRepeat.once
     /// 作り手。nil は torne のひな形の作り手（値は `XSRSRequestVocabulary` が持つ）
     public var reservationCreatorID: String?
     public var priorityFlag = 0
+    /// 録画先（既定は内蔵。作成のモデルが HDD の一覧から決める）
+    public var recordDestination = RecordDestination.internalHDD
 
     public init(start: Date, durationSeconds: Int, channel: ScheduleChannel, networkID: Int, eventID: Int = 0,
                 desiredQualityMode: Int = QualityMode.dr) {
@@ -563,7 +622,7 @@ public struct RecordingCatalogService: Sendable {
     /// 予約の一覧。50 件ずつ頁を送る（予約は 100 件まで入る。torne mobile HB は 50 件を 1 回だけ頼む）
     public func schedules() async throws -> [RecordSchedule] {
         let source = "soap:\(actions.getRecordScheduleList.name)"
-        return try await scheduleItems().map { try RecordSchedule(item: $0, source: source) }
+        return try await scheduleItems().map { try RecordSchedule(item: $0, source: source, vocabulary: profile.xsrs) }
     }
 
     /// 作る前に、重なる予約を読む（何も書かない）
@@ -572,7 +631,7 @@ public struct RecordingCatalogService: Sendable {
         let source = "soap:\(action.name)"
         let response = try await call(action, [(names.elements, profile.xsrs.document(for: schedule))])
         guard let result = response.result, !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        return try XSRSItem.parseDocument(result, source: source).map { try RecordSchedule(item: $0, source: source) }
+        return try XSRSItem.parseDocument(result, source: source).map { try RecordSchedule(item: $0, source: source, vocabulary: profile.xsrs) }
     }
 
     /// 予約を作る。自動で再試行しない（届かなくても、作られていることがある）

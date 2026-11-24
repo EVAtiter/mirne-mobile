@@ -6,31 +6,137 @@ import Observation
 // nasne は一覧が変わったことを知らせない（予約のサービスには通知する状態変数が無い）。代わりに集約ステータスが一覧ごとの
 // 世代（generation）を持ち、一覧が変わるたびに進む。公式の torne® mobile もこの頼みを 2 秒ごとに読んでいる。
 // アプリが前面にある間、ここだけが読み、各画面のモデルは読んだ世代を見て、変わったときだけ自分の一覧を読み直す
-// （画面ごとに同じ頼みを読まない）。AppKit・SwiftUI に依存させない。
+// （画面ごとに同じ頼みを読まない）。nasne に届くか（オフラインか）もここで決める（2026-11-24）。AppKit・SwiftUI に依存させない。
 
-/// 集約ステータスの見回り
+/// nasne に届くか（集約ステータスの見回りが決める。2026-11-24）
+public enum NasneLinkState: Sendable, Equatable {
+    /// まだ確かめている（起動した直後。1 回目が読めなかったら、すぐ読み直して決める）
+    case checking
+    /// 集約ステータスが読めている
+    case online
+    /// 集約ステータスが続けて読めなかった（`NasneLinkPolicy.failuresBeforeOffline` 回）
+    case offline
+}
+
+/// 集約ステータスの見回り。一覧ごとの世代と、nasne に届くか（`link`）を持つ。
+///
+/// 届くかはここだけが決める。各画面のモデルは、つながっていない（`isOnline` が偽）間は nasne から読まない
+/// （起動した直後に確かめる前に読み込みを始めない・オフラインの間に各画面の読み込みが失敗して知らせが並ばないようにする）
 @MainActor
 @Observable
 public final class LiveStatusMonitor {
     /// 最後に読めた世代。読めなかったら nil（各画面は世代に頼らない読み直しに切り替える）
     public private(set) var generations: LiveGenerations?
+    /// nasne に届くか
+    public private(set) var link: NasneLinkState
+    /// オフラインのまま `NasneLinkPolicy.giveUpAfter` が経ち、自動の読み直しを止めた
+    public private(set) var hasGivenUp = false
+    /// 見回りを始め直す印（`retry()` で進む。画面は `run()` をこれと前面かどうかで回し直す）
+    public private(set) var runToken = 0
+
+    /// 続けて読めなかった回数
+    @ObservationIgnored private var failures = 0
+    /// オフラインになった時刻（`run()` を始め直すと、オフラインのままならその時刻から数え直す）
+    @ObservationIgnored private var offlineSince: ContinuousClock.Instant?
 
     private let deviceInfo: any DeviceInfoService
 
-    public init(deviceInfo: any DeviceInfoService) {
+    /// `initialLink` は試験で、確かめた後の状態から始めるときに渡す
+    public init(deviceInfo: any DeviceInfoService, initialLink: NasneLinkState = .checking) {
         self.deviceInfo = deviceInfo
+        link = initialLink
     }
 
-    /// 1 回読む。読めなければ世代を nil にする（古い世代のまま「変わっていない」と見なさない）
+    /// つながっているか（各画面のモデルは、偽の間は nasne から読まない）
+    public var isOnline: Bool { link == .online }
+
+    /// 1 回読む。続けて `NasneLinkPolicy.failuresBeforeOffline` 回読めなければオフラインにし、世代を nil にする
+    /// （古い世代のまま「変わっていない」と見なさない）
     public func poll() async {
-        generations = (try? await deviceInfo.liveStatus()).map(LiveGenerations.init)
+        let status = await Self.read(deviceInfo)
+        if let status {
+            generations = LiveGenerations(status)
+            failures = 0
+            offlineSince = nil
+            hasGivenUp = false
+            link = .online
+        } else {
+            failures += 1
+            // オフラインと見なす前の 1 回の取りこぼしでは世代を消さない（すぐ読み直す。消すと各画面が時間で読み直しに走る）
+            guard failures >= NasneLinkPolicy.failuresBeforeOffline else { return }
+            generations = nil
+            if link != .offline { offlineSince = .now }
+            link = .offline
+        }
     }
 
-    /// 取り消されるまで `LiveStatusMonitorTiming.interval` ごとに読む（呼ぶ側が、アプリが前面にある間だけ回す）
+    /// 取り消されるか、オフラインのまま `NasneLinkPolicy.giveUpAfter` が経つまで読む
+    /// （呼ぶ側が、アプリが前面にある間だけ回す。`runToken` が変わったら回し直す）
     public func run() async {
+        hasGivenUp = false
+        // 始め直したら、オフラインのままでも 10 分を数え直す
+        if link == .offline { offlineSince = .now }
         while !Task.isCancelled {
             await poll()
-            try? await Task.sleep(for: LiveStatusMonitorTiming.interval)
+            let offlineFor = offlineSince.map { ContinuousClock.now - $0 }
+            guard let delay = NasneLinkPolicy.nextDelay(link: link, failures: failures, offlineFor: offlineFor) else {
+                hasGivenUp = true
+                return
+            }
+            try? await Task.sleep(for: delay)
+        }
+    }
+
+    /// 見回りを始め直す（「探し直す」・ネットワークが切り替わったとき）。止めた後の読み直しもここから始まる
+    public func retry() {
+        hasGivenUp = false
+        runToken += 1
+    }
+
+    /// 集約ステータスを読む（`NasneLinkPolicy.requestTimeout` で打ち切る。届かない nasne に 15 秒待たない）
+    private static func read(_ deviceInfo: any DeviceInfoService) async -> LiveStatus? {
+        await withTaskGroup(of: LiveStatus?.self) { group in
+            group.addTask { try? await deviceInfo.liveStatus() }
+            group.addTask {
+                try? await Task.sleep(for: NasneLinkPolicy.requestTimeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+}
+
+extension Optional where Wrapped == LiveStatusMonitor {
+    /// nasne から読んでよいか（つながっているとき。見回りを持たない部品〔試験〕はいつでもよい）
+    @MainActor public var allowsNasneRequests: Bool { self?.isOnline ?? true }
+}
+
+/// 届くかの見分け方と、読み直しの間の決まり（2026-11-24）
+public enum NasneLinkPolicy {
+    /// 続けて何回読めなかったらオフラインと見なすか（1 回の取りこぼしで画面を止めない）
+    public static let failuresBeforeOffline = 2
+    /// 集約ステータスの 1 回の打ち切り（ふだんの頼みの 15 秒を待つと、オフラインと分かるまでが長い）
+    public static let requestTimeout: Duration = .seconds(5)
+    /// オフラインになってからこの間は `offlineFastInterval` ごとに読み直す（nasne の再起動・Wi-Fi のつなぎ直しにすぐ気付く）
+    public static let offlineFastPeriod: Duration = .seconds(60)
+    public static let offlineFastInterval: Duration = .seconds(5)
+    /// その後は `offlineSlowInterval` ごと
+    public static let offlineSlowInterval: Duration = .seconds(30)
+    /// オフラインのままこの間が経ったら、自動の読み直しを止める（外出先で開いたままでも読み続けない）
+    public static let giveUpAfter: Duration = .seconds(600)
+
+    /// 次に読むまでの間。nil なら止める
+    public static func nextDelay(link: NasneLinkState, failures: Int, offlineFor: Duration?) -> Duration? {
+        switch link {
+        case .online, .checking:
+            // 読めなかったら（まだオフラインと見なす前）、すぐもう 1 回読む
+            return failures > 0 ? .zero : LiveStatusMonitorTiming.interval
+        case .offline:
+            let elapsed = offlineFor ?? .zero
+            if elapsed >= giveUpAfter { return nil }
+            return elapsed < offlineFastPeriod ? offlineFastInterval : offlineSlowInterval
         }
     }
 }

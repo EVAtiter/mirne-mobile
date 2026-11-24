@@ -27,7 +27,22 @@ extension AppEnvironment {
 
     /// ネットワークの切り替えを見張る（起動のときに 1 回）
     func startWatchingNetwork() {
-        networkWatcher = NetworkPathWatcher { [weak self] in self?.checkConnection(.networkChange) }
+        networkWatcher = NetworkPathWatcher { [weak self] in
+            self?.checkConnection(.networkChange)
+            // 自動の読み直しを止めていても、集約ステータスの見回りを始め直す
+            self?.liveStatus?.retry()
+        }
+    }
+
+    /// 「探し直す」：今のアドレスを確かめ（届かなければ探し直し）、集約ステータスの見回りも始め直す
+    func retryConnection() {
+        checkConnection(.manual)
+        liveStatus?.retry()
+    }
+
+    /// 集約ステータスが読めた（つながった）。探し直しで見つからないままになっていたら、つながったことにする
+    func noteNasneReachable() {
+        if connection == .notFound { connection = .connected }
     }
 
     private func runConnectionCheck(registration: RegisteredNasne, trigger: NasneRelocationTrigger) async {

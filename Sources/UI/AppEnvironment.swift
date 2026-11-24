@@ -17,6 +17,10 @@ final class AppEnvironment {
     let store: any RegistrationStore
     /// 登録した nasne に対する部品。登録するまでは nil
     private(set) var services: NasneServices?
+    /// 集約ステータスの見回り（一覧ごとの世代と、nasne に届くか。services と一緒に作り、一緒に捨てる。回すのは主ウィンドウ）
+    private(set) var liveStatus: LiveStatusMonitor?
+    /// nasne に届くか（メニューの項目を押せるかに使う。登録する前・確かめている間は偽）
+    var isNasneOnline: Bool { liveStatus?.isOnline == true }
     /// 局の一覧（録画・予約・番組表・ライブの画面で共通。services と一緒に作り、一緒に捨てる）
     private(set) var channels: ChannelCatalog?
     /// 番組表の取り直しと番組表（登録した nasne ごと。登録するまで・番組表を開けなかったときは nil）
@@ -146,27 +150,29 @@ final class AppEnvironment {
         let viewing = ViewingRecorder(udn: registration.udn, library: library, resumePositions: services.resumePositions)
         self.viewing = viewing
         Task { await viewing.load() }
-        let channels = ChannelCatalog(deviceInfo: services.deviceInfo)
+        // 届くかを確かめるまで、各部品は nasne から読まない（確かめてつながったら主ウィンドウがまとめて読む）
+        let liveStatus = LiveStatusMonitor(deviceInfo: services.deviceInfo)
+        self.liveStatus = liveStatus
+        let channels = ChannelCatalog(deviceInfo: services.deviceInfo, link: liveStatus)
         self.channels = channels
         self.services = services
         restoreError = nil
-        programGuide = Self.makeProgramGuide(services: services)
+        programGuide = Self.makeProgramGuide(services: services, link: liveStatus)
         live = LiveModel(channels: channels, catalog: services.liveCatalog, programGuide: programGuide?.store)
-        // 局のロゴ：保存したものをすぐ出し、nasne から 1 回読み直す（読めた分だけ差し替えて保存する）
-        let logos = ChannelLogoModel(source: services.programGuide, store: programGuide?.store)
+        // 局のロゴ：保存したものをすぐ出す。nasne からの読み直しと番組表の取り直しは、届くと分かったときに主ウィンドウが頼む
+        // （起動したとき・登録したとき・つながり直したとき。版数表が前と同じなら EPGGet は送らない）
+        let logos = ChannelLogoModel(source: services.programGuide, store: programGuide?.store, link: liveStatus)
         logos.loadSaved()
         channelLogos = logos
-        Task { await logos.refresh() }
-        // 起動したとき（と登録したとき）に 1 回取り直す。版数表が前と同じなら EPGGet は送らない
-        if let programGuide { Task { await programGuide.refresh() } }
     }
 
     /// 番組表を開いて、取り直しのモデルを作る。開けなければ nil（番組表のほかは使えるようにする）
-    private static func makeProgramGuide(services: NasneServices) -> ProgramGuideModel? {
+    private static func makeProgramGuide(services: NasneServices, link: LiveStatusMonitor) -> ProgramGuideModel? {
         do {
             let url = try ProgramGuideFiles.storeURL()
             return ProgramGuideModel(service: services.programGuide, store: try EPGStore(fileURL: url),
-                                     versions: FileProgramGuideVersionStore(fileURL: ProgramGuideFiles.versionURL(storeURL: url)))
+                                     versions: FileProgramGuideVersionStore(fileURL: ProgramGuideFiles.versionURL(storeURL: url)),
+                                     link: link)
         } catch {
             Logger(subsystem: AppLog.subsystem, category: "epg")
                 .error("番組表を開けない: \(NasneDiagnostics.summary(error), privacy: .public)")
@@ -203,6 +209,7 @@ final class AppEnvironment {
         library = nil
         try store.delete()
         services = nil
+        liveStatus = nil
         channels = nil
         try ProgramGuideFiles.delete(storeURL: try ProgramGuideFiles.storeURL())
         try LibraryStore.delete(fileURL: try LibraryStore.defaultFileURL())

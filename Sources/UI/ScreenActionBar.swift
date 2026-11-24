@@ -15,10 +15,12 @@ struct ScreenActionBar<Leading: View>: View {
     @Environment(\.mainBarTitle) private var title
     /// 右端の「ライブ」「設定」（iPhone の縦向き・iPad の狭い分割では上の帯に出すので配られない）
     @Environment(\.mainBarAccessories) private var accessories
+    /// 帯の中央に置く画面の切り替え（Mac。主画面が配る）
+    @Environment(\.mainBarSwitcher) private var switcher
 
-    /// 載せるものが何も無いか（左の操作・一覧の状態・画面の名前・「ライブ」「設定」のどれも無い）。
+    /// 載せるものが何も無いか（左の操作・一覧の状態・画面の名前・「ライブ」「設定」・切り替えのどれも無い）。
     /// 「更新」を外した後、iPhone の縦向きの情報の画面などで、空の帯と横線だけが残った（2026-11-24）
-    private var isEmpty: Bool { !hasLeading && status == nil && title == nil && accessories == nil }
+    private var isEmpty: Bool { !hasLeading && status == nil && title == nil && accessories == nil && switcher == nil }
 
     var body: some View {
         if !isEmpty { bar }
@@ -27,7 +29,16 @@ struct ScreenActionBar<Leading: View>: View {
     private var bar: some View {
         VStack(spacing: 0) {
             Group {
-                if let title {
+                if let switcher {
+                    MainBarSwitcherRow(selection: switcher) {
+                        HStack(spacing: ScreenActionBarLayout.spacing) { leading }
+                    } trailing: { showsStatus in
+                        HStack(spacing: ScreenActionBarLayout.spacing) {
+                            if showsStatus, let status { BarStatusText(text: status) }
+                            MainBarAccessoryButtons()
+                        }
+                    }
+                } else if let title {
                     // 画面の名前を中央に。入らなければ名前を出さない形にする
                     ViewThatFits(in: .horizontal) {
                         CenteredRow(spacing: ScreenActionBarLayout.spacing) {
@@ -124,18 +135,54 @@ struct MainBarAccessories {
     let watchLive: (() -> Void)?
     let liveDisabled: Bool
     let openSettings: () -> Void
-    /// 文字も出すか（Mac の広い窓のとき。それ以外は絵だけ）
-    var showsTitles = false
+}
+
+/// 切り替えを中央に置く帯の並べ方（Mac）。左に画面の操作、中央に切り替え、右に一覧の状態と「ライブ」「設定」。
+/// 入らなければ一覧の状態を省き、それでも入らなければ切り替えを絵だけにする（2026-11-24 の試作）
+struct MainBarSwitcherRow<Leading: View, Trailing: View>: View {
+    let selection: Binding<MainSection>
+    @ViewBuilder let leading: () -> Leading
+    /// 右の部品（引数は一覧の状態を出すか）
+    @ViewBuilder let trailing: (Bool) -> Trailing
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(showsStatus: true, showsTitles: true)
+            row(showsStatus: false, showsTitles: true)
+            row(showsStatus: false, showsTitles: false)
+            // それでも入らなければ中央に揃えず詰めて並べる
+            HStack(spacing: ScreenActionBarLayout.spacing) {
+                leading()
+                Spacer(minLength: 0)
+                MainTabBar(selection: selection, inline: true, showsTitles: false)
+                Spacer(minLength: 0)
+                trailing(false)
+            }
+        }
+    }
+
+    private func row(showsStatus: Bool, showsTitles: Bool) -> some View {
+        CenteredRow(spacing: ScreenActionBarLayout.spacing) {
+            leading()
+            MainTabBar(selection: selection, inline: true, showsTitles: showsTitles)
+            trailing(showsStatus)
+        }
+    }
 }
 
 extension EnvironmentValues {
+    /// nasne に届くか（主画面が配る。つながっていない間は nasne と通信する操作を押せなくし、オフラインなら「情報」に印を出す。
+    /// 主画面の外〔視聴ウインドウなど〕は配らないのでつながっている扱い）
+    @Entry var nasneLink = NasneLinkState.online
+    /// 各画面の帯の中央に置く画面の切り替え（Mac の主画面が配る。主画面の外・iOS では無い）
+    @Entry var mainBarSwitcher: Binding<MainSection>? = nil
     /// 各画面の帯の右端に出す「ライブ」「設定」（主画面が配る。主画面の外〔番組表のウインドウなど〕では無い）
     @Entry var mainBarAccessories: MainBarAccessories? = nil
     /// 各画面の帯の中央に出す画面の名前（上の帯を隠しているときだけ。録画は検索の欄で幅が足りないので出さない。主画面が配る）
     @Entry var mainBarTitle: String? = nil
     /// 上の帯（画面の名前）を隠しているか（iPad の広い幅と iPhone の横向き。各画面の帯が画面の上端に来るので、上の余白を詰めない。主画面が配る）
     @Entry var mainTitleBarHidden = false
-    /// 上の帯に画面の操作も置いているか（iPhone の縦向き・iPad の狭い分割。予約の「新規予約」は上の帯の左に出し、各画面の帯には置かない。主画面が配る）
+    /// 上の帯に画面の操作も置いているか（iPhone の縦向き・iPad の狭い分割。予約の「マニュアル予約」は上の帯の左に出し、各画面の帯には置かない。主画面が配る）
     @Entry var mainTitleBarHasActions = false
 }
 
@@ -151,7 +198,7 @@ struct MainBarTitle: View {
     }
 }
 
-/// 帯の右端の「ライブ」「設定」（Mac の広い窓なら絵と文字、それ以外は絵だけ）
+/// 帯の右端の「ライブ」「設定」（どの OS も絵だけ。名前は `help` で出す。Mac も 2026-11-24 から絵だけ。前は広い窓で絵と文字）
 struct MainBarAccessoryButtons: View {
     @Environment(\.mainBarAccessories) private var accessories
 
@@ -166,7 +213,7 @@ struct MainBarAccessoryButtons: View {
                 Button(action: accessories.openSettings) { Label("設定", systemImage: MainToolbarSymbol.settings) }
                     .help("設定を開く")
             }
-            .labelStyle(accessories.showsTitles ? AnyLabelStyle(.titleAndIcon) : AnyLabelStyle(.iconOnly))
+            .labelStyle(.iconOnly)
             // iOS は 1 つの丸い板にまとめる（ナビゲーションの帯のボタンのまとまりと同じ形。OS ごと）
             .barButtonGroupChrome()
         }
@@ -186,6 +233,31 @@ struct BarSearchFieldChrome<Content: View>: View {
         .padding(.vertical, BarSearchFieldLayout.verticalPadding)
         .background(.background, in: RoundedRectangle(cornerRadius: BarSearchFieldLayout.cornerRadius))
         .overlay(RoundedRectangle(cornerRadius: BarSearchFieldLayout.cornerRadius).strokeBorder(.separator))
+    }
+}
+
+/// 帯の検索の欄（iOS で画面の帯の中に置く。録画・番組表で同じもの。Mac は窓のタイトルの帯の `searchable`〔`mainToolbarSearch`〕）。
+/// 文字があるときは右に消すボタン。一覧を送り始めたら閉じるのは、それぞれの一覧に `scrollDismissesKeyboard` を付ける
+struct BarSearchField: View {
+    let prompt: String
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+
+    var body: some View {
+        BarSearchFieldChrome {
+            TextField(prompt, text: $text)
+                .focused(focused)
+                .textFieldStyle(.plain)
+                // キーボードの改行は「検索」と出し、押したらキーボードを閉じる（iPhone のキーボードには閉じるボタンが無い。2026-11-24）
+                .submitLabel(.search)
+                .onSubmit { focused.wrappedValue = false }
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("検索の文字を消す")
+            }
+        }
     }
 }
 

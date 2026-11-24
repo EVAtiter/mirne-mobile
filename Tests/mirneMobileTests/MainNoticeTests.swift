@@ -17,6 +17,20 @@ struct MainNoticeTests {
         #expect(notFound?.action == .retryConnection)
     }
 
+    @Test("集約ステータスが読めない（オフライン）なら、探し直しが同じアドレスで見つけていても「見つかりません」。探している間は探している知らせ。止めた後は説明を替える")
+    func connectionWithLink() {
+        #expect(MainNotices.connection(.connected, link: .checking) == nil)
+        #expect(MainNotices.connection(.connected, link: .online) == nil)
+        let offline = MainNotices.connection(.connected, link: .offline)
+        #expect(offline?.kind == .error)
+        #expect(offline?.title == "nasne が見つかりません")
+        #expect(offline?.action == .retryConnection)
+        #expect(MainNotices.connection(.searching, link: .offline)?.kind == .progress)
+        let gaveUp = MainNotices.connection(.notFound, link: .offline, hasGivenUp: true)
+        #expect(gaveUp?.detail != offline?.detail)
+        #expect(gaveUp?.id == offline?.id)   // 同じ出どころ（1 つだけ出す）
+    }
+
     @Test("録画一覧：読み込み中・更新中は進み具合、誤りは題に「録画一覧」を付けてもう一度読み込むのボタン、削除中は別の行")
     func recordingsNotices() {
         let loading = MainNotices.recordings(isLoading: true, loadError: nil, isRefreshing: false, refreshError: nil,

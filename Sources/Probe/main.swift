@@ -201,6 +201,9 @@ func runTitles() async throws {
     say("録画: xsrs \(titles.count) 件（件数 API は \(counts.count) 件・\(titles.count == counts.count ? "一致" : "不一致")）（\(elapsed(start))）")
     let joined = titles.filter { !$0.resources.isEmpty }
     say("DIDL と結合できた: \(joined.count) 件・残りコピー回数あり \(titles.filter { $0.copyCountRemaining != nil }.count) 件")
+    // 録画の容器の Browse の件数（xsrs に載らない録画が DLNA には出るかを見る。共有フォルダーの動画も入る。2026-11-24）
+    let browsed = try await catalog.browseEntries(catalog.profile.dlna.allRecordingsContainer)
+    say("Browse（録画の容器）: \(browsed.count) 件・xsrs の録画より \(browsed.count - titles.count) 件多い")
     var qualities: [String: Int] = [:]
     for title in titles {
         for resource in title.resources { qualities[resource.quality ?? "なし", default: 0] += 1 }

@@ -96,7 +96,12 @@ public enum ProgramGuide {
 
     /// 「11/4(水)」
     public static func dayLabel(_ day: GuideDay) -> String {
-        day.start.formatted(dayFormat)
+        dateLabel(day.start)
+    }
+
+    /// 日時の日付「11/4(水)」（番組の検索の結果の行など、番組表の日の区切りによらない日付）
+    public static func dateLabel(_ date: Date) -> String {
+        date.formatted(dayFormat)
     }
 
     /// 1 日の始まりから `hour` 時間目の時刻の「時」（4〜27 ではなく 4〜23・0〜3。日をまたいで続けても同じ）

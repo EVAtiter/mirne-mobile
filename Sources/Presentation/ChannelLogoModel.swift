@@ -24,14 +24,17 @@ public final class ChannelLogoModel {
 
     private let source: (any ProgramGuideService)?
     private let store: EPGStore?
+    /// 集約ステータスの見回り（つながっていない間は読まない。無ければいつでも読む）
+    private let link: LiveStatusMonitor?
     /// nasne から読み終えたか（失敗したら false のまま、次に頼まれたときに読み直す）
     @ObservationIgnored public private(set) var fetched = false
     @ObservationIgnored private var fetching = false
     private static let logger = Logger(subsystem: AppLog.subsystem, category: "epg")
 
-    public init(source: (any ProgramGuideService)?, store: EPGStore?) {
+    public init(source: (any ProgramGuideService)?, store: EPGStore?, link: LiveStatusMonitor? = nil) {
         self.source = source
         self.store = store
+        self.link = link
     }
 
     /// 保存したロゴを読む（起動したとき。すぐ返る）
@@ -45,7 +48,7 @@ public final class ChannelLogoModel {
 
     /// nasne から読み直す。読めた放送の種類だけ差し替えて保存する（読めなかった種類は前のロゴのまま）
     public func refresh() async {
-        guard let source, !fetching else { return }
+        guard let source, !fetching, link.allowsNasneRequests else { return }
         fetching = true
         defer { fetching = false }
         var next = logos

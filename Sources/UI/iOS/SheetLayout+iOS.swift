@@ -1,10 +1,5 @@
 import SwiftUI
 
-extension MainWindowLayout {
-    /// これより狭いと、各画面の帯の「ライブ」「設定」を文字なしの絵だけにする（iOS 版：iPad の広い幅でも文字は出さず、いつも絵だけ。2026-11-23）
-    static let accessoryTitlesWidth: CGFloat = .infinity
-}
-
 extension View {
     /// シートの中身の幅（iPad 版：シートの幅は OS が決めるので、その幅いっぱいに広げる）
     func sheetContentWidth(_ width: CGFloat) -> some View {
@@ -64,8 +59,49 @@ enum SheetCloseLayout {
     static let topPadding: CGFloat = 16
 }
 
-/// 何かを作る・変えるシートの下の帯のボタンの並び
+/// 何かを作る・変えるシート（予約のシート）のボタンの置き場
 enum SheetActionLayout {
-    /// 「キャンセル」を左端、確定のボタンを右端に分けるか（iPad 版：左に「キャンセル」、右に確定のボタン〔太字〕。上の帯に置いたときの並びを下の帯で使う）
-    static let splitsCancelAndConfirm = true
+    /// 上のナビゲーションの帯に置くか（iOS 版：iOS の標準の形。左に「キャンセル」、右に確定のボタン、削除は中身のいちばん下の赤い行。
+    /// 2026-11-24。前は下の帯に置いていて、iPhone の縦向きではボタンが画面の下端に寄りすぎ、横向きでは中身がスクロールできず押せなかった）
+    static let usesNavigationBar = true
+}
+
+extension View {
+    /// ナビゲーションの帯の題を小さく 1 行で出す（iOS 版）
+    func inlineNavigationTitle() -> some View {
+        navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// 予約のシートのフォームの高さ（iOS 版：決めない。中身はシートの中でスクロールする。
+    /// 横向きの iPhone でシートが中身より低くなっても下まで届く）
+    func scheduleSheetFormHeight() -> some View {
+        self
+    }
+
+    /// 予約のシートの大きさ（iOS 版）：狭い幅（iPhone）は中くらい・大きいの 2 段、広い幅（iPad）は OS の標準のフォームのシート。
+    /// 中身の高さに合わせる形（`sheetFitsContentHeight`）は、上のナビゲーションの帯を持つシートでは高さを測れず、
+    /// iPad でシートがごく低くなって中身が見えなかった（2026-11-24）
+    func scheduleSheetSizing() -> some View {
+        modifier(ScheduleSheetSizing())
+    }
+}
+
+/// 予約のシートの大きさ（狭い幅かは主画面の印で見る。`SheetFitsContentHeight` と同じ）
+private struct ScheduleSheetSizing: ViewModifier {
+    @Environment(\.usesCompactLayout) private var compact
+
+    func body(content: Content) -> some View {
+        if compact {
+            content.presentationDetents([.medium, .large])
+        } else {
+            content.presentationSizing(.form)
+        }
+    }
+}
+
+extension View {
+    /// シートの外を押したら閉じる（iOS 版：OS のシートが元から外を押すと閉じるので何もしない）
+    func closesOnOutsideClick(_ close: @escaping () -> Void) -> some View {
+        self
+    }
 }

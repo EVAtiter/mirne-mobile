@@ -60,6 +60,8 @@ public final class SchedulesModel {
 
     /// 読み込み直す（選んでいた予約は、まだあれば選んだまま）。局名は読めていなければ一緒に読む
     public func reload() async {
+        // つながっていない間は読まない（前に読んだ一覧を出したまま）
+        guard liveStatus.isOnline else { return }
         schedules = .loading
         async let names: Void = catalog.load()
         // 世代は一覧より先に控える（読んでいる間に変わったら、次の見回りで世代の違いとして見つかる。
@@ -81,7 +83,7 @@ public final class SchedulesModel {
     /// 世代が読めないとき（見回りの頼みが失敗した・項目が無い）は、`SchedulesRefresh.fallbackInterval` ごとに一覧を読み直す。
     /// まだ読んでいない・読み込みの途中・読み込めなかったときは何もしない（最初の読み込みと読み直しは `reload` が受け持つ）
     public func refreshIfChanged() async {
-        guard case .loaded = schedules else { return }
+        guard liveStatus.isOnline, case .loaded = schedules else { return }
         let generation = observedGeneration
         guard tracker.needsRefresh(observed: generation, now: now()) else { return }
         await refreshQuietly(generation: generation)
@@ -234,16 +236,25 @@ public final class ScheduleCreationModel {
     public var start: Date
     public var durationMinutes: Int
     public var qualityMode: Int
+    /// 繰り返し（番組表からの予約だけ選べる。時刻を指定した手動の予約は一回録画のまま。2026-11-24）
+    public var repeatMode = ScheduleRepeat.once
     public private(set) var phase = Phase.editing
     /// 番組表から予約する番組（手動の予約なら nil）
     public let program: ScheduleProgram?
 
     private let service: any ScheduleService
     private let now: @Sendable () -> Date
+    /// 録画先を決める（送る直前に読む。外付けがつながっていれば外付け。既定は内蔵）
+    private let destination: @Sendable () async -> RecordDestination
+    /// 送る直前に決めた録画先（重なる予約の確かめと作成で同じ値を送る）
+    private var resolvedDestination = RecordDestination.internalHDD
 
-    public init(channels: [Channel], service: any ScheduleService, now: @escaping @Sendable () -> Date = Date.init) {
+    public init(channels: [Channel], service: any ScheduleService,
+                destination: @escaping @Sendable () async -> RecordDestination = { .internalHDD },
+                now: @escaping @Sendable () -> Date = Date.init) {
         self.channels = channels
         self.service = service
+        self.destination = destination
         self.now = now
         program = nil
         channelKey = channels.first?.scheduleKey
@@ -253,15 +264,26 @@ public final class ScheduleCreationModel {
     }
 
     /// 番組表から予約する（局・開始・長さは番組のもの。画質は既定から選ぶ）
-    public init(program: ScheduleProgram, service: any ScheduleService, now: @escaping @Sendable () -> Date = Date.init) {
+    public init(program: ScheduleProgram, service: any ScheduleService,
+                destination: @escaping @Sendable () async -> RecordDestination = { .internalHDD },
+                now: @escaping @Sendable () -> Date = Date.init) {
         channels = [program.channel]
         self.service = service
+        self.destination = destination
         self.now = now
         self.program = program
         channelKey = program.channel.scheduleKey
         start = program.start
         durationMinutes = max(1, Int((Double(program.durationSeconds) / 60).rounded(.up)))
         qualityMode = ScheduleCreationDefaults.qualityMode
+    }
+
+    /// 繰り返しを選べるか（番組表からの予約だけ。手動の予約は nasne に 1 件しか置けず、録画も一覧に載らない）
+    public var offersRepeat: Bool { program != nil }
+
+    /// 選べる繰り返し（毎週は番組の開始の曜日）
+    public var repeatChoices: [ScheduleRepeat] {
+        offersRepeat ? ScheduleRepeat.choices(startingAt: startMinute) : [.once]
     }
 
     /// 選んだ局（鍵が選べる局に無ければ nil。ほかの局へ黙って替えない）
@@ -292,17 +314,25 @@ public final class ScheduleCreationModel {
         guard validationMessage == nil, let channel else { return nil }
         // 番組の eventId は、番組の局のときだけ載せる（別の局の番組の eventId を流用しない。torne mobile HB §83）
         let eventID = program.flatMap { $0.channel.scheduleKey == channel.scheduleKey ? $0.eventID : nil } ?? 0
-        return NewRecordSchedule(
+        var schedule = NewRecordSchedule(
             start: startMinute, durationSeconds: program?.durationSeconds ?? durationMinutes * 60,
             channel: ScheduleChannel(broadcastingType: channel.broadcastingType, channelType: channel.broadcastingType,
                                      serviceID: channel.serviceID),
             networkID: channel.networkID, eventID: eventID, desiredQualityMode: qualityMode)
+        schedule.recordDestination = resolvedDestination
+        schedule.repeatMode = offersRepeat ? repeatMode : .once
+        return schedule
     }
 
-    /// 重なる予約を確かめ、無ければ作る。あれば `confirmingConflicts` で止まる
+    /// 録画先を決め、重なる予約を確かめ、無ければ作る。あれば `confirmingConflicts` で止まる
     public func submit() async {
-        guard !phase.isBusy, let draft else { return }
+        guard !phase.isBusy, draft != nil else { return }
         phase = .checking
+        resolvedDestination = await destination()
+        guard let draft else {
+            phase = .editing
+            return
+        }
         do {
             let conflicts = try await service.conflicts(for: draft)
             if conflicts.isEmpty {
@@ -343,9 +373,9 @@ public final class ScheduleCreationModel {
     }
 }
 
-/// 予約の画質の変更（疎な更新）。
+/// 予約の画質と繰り返しの変更（疎な更新。繰り返しは番組に紐付いた予約で、今の値が読めるときだけ）。
 ///
-/// 画質と、組の録画先を送り、priorityFlag は今の値のまま送る（2026-11-19）。nasne は受け付けても値を変えないことが
+/// 画質と、予約の今の録画先（変えない）を送り、priorityFlag は今の値のまま送る（2026-11-19。録画先は 2026-11-24 から今の値）。nasne は受け付けても値を変えないことが
 /// あるので、送った後は一覧を読み直し、読み直した値が変わっていなければそのことを出す。自動で再試行しない
 @MainActor
 @Observable
@@ -363,6 +393,8 @@ public final class ScheduleEditModel {
 
     public let original: RecordSchedule
     public var qualityMode: Int
+    /// 繰り返し（変えられるときだけ使う。`offersRepeatChange`）
+    public var repeatMode: ScheduleRepeat
     public private(set) var phase = Phase.editing
     /// 読み直した予約（送った後）
     public private(set) var reread: RecordSchedule?
@@ -373,16 +405,37 @@ public final class ScheduleEditModel {
         self.original = original
         self.service = service
         qualityMode = original.desiredQualityMode == QualityMode.threeTimes ? QualityMode.threeTimes : QualityMode.dr
+        repeatMode = original.repeatMode ?? .once
     }
 
-    /// 元の画質から変えたか（変えていなければ送らない）
-    public var hasChange: Bool { qualityMode != original.desiredQualityMode }
+    /// 繰り返しを変えられるか：番組に紐付いた予約で、今の繰り返しの値が読めるときだけ（知らない値は変えさせない）
+    public var offersRepeatChange: Bool { original.isLinkedToProgram && original.repeatMode != nil }
+
+    /// 選べる繰り返し（毎週は予約の開始の曜日。今の値が別の曜日の毎週なら、それを毎週として出す）
+    public var repeatChoices: [ScheduleRepeat] {
+        ScheduleRepeat.choices(startingAt: original.start).map { choice in
+            if case .weekly = choice, case .weekly = original.repeatMode, let current = original.repeatMode { return current }
+            return choice
+        }
+    }
+
+    /// 画質を変えたか
+    private var qualityChanged: Bool { qualityMode != original.desiredQualityMode }
+    /// 繰り返しを変えたか
+    private var repeatChanged: Bool { offersRepeatChange && repeatMode != original.repeatMode }
+
+    /// 元の値から変えたか（変えていなければ送らない）
+    public var hasChange: Bool { qualityChanged || repeatChanged }
 
     public func submit() async {
         guard hasChange, phase != .sending else { return }
         phase = .sending
         do {
-            try await service.update(ScheduleUpdate.quality(qualityMode, of: original))
+            // 画質と繰り返しは 1 回の変更で一緒に送れる（2026-11-24 に書き込んで確かめた）。録画先は今の値のまま
+            try await service.update(ScheduleUpdate(id: original.id, priorityFlag: original.priorityFlag,
+                                                    repeatMode: repeatChanged ? repeatMode : nil,
+                                                    desiredQualityMode: qualityChanged ? qualityMode : nil,
+                                                    recordDestinationID: original.recordDestinationID))
         } catch {
             let unknown = (error as? NasneError).map { $0.category == .unreachable || $0.category == .parse } ?? true
             phase = .failed(ErrorText.present(error), mayHaveChanged: unknown)
@@ -392,7 +445,8 @@ public final class ScheduleEditModel {
         do {
             let found = try await service.schedules().first { $0.id == original.id }
             reread = found
-            phase = found.map { .finished(reflected: $0.desiredQualityMode == qualityMode) } ?? .missing
+            phase = found.map { .finished(reflected: $0.desiredQualityMode == qualityMode
+                                              && (!repeatChanged || $0.repeatMode == repeatMode)) } ?? .missing
         } catch {
             phase = .failed(ErrorText.present(error), mayHaveChanged: true)
         }
@@ -400,5 +454,27 @@ public final class ScheduleEditModel {
 
     public func dismissFailure() {
         if case .failed = phase { phase = .editing }
+    }
+}
+
+/// 繰り返しの名前（公式の torne® mobile の表記。予約のシート・一覧・カードで同じものを使う）
+public enum ScheduleRepeatText {
+    public static func label(_ repeatMode: ScheduleRepeat) -> String {
+        switch repeatMode {
+        case .once: "一回録画"
+        case .daily: "毎日"
+        case .mondayToSaturday: "月〜土"
+        case .mondayToFriday: "月〜金"
+        case .weekly: "毎週"
+        }
+    }
+
+    /// 一覧・カードに出す名前（一回録画は出さない。知らない値は名前を作らず値のまま）
+    public static func badge(_ schedule: RecordSchedule) -> String? {
+        guard let repeatMode = schedule.repeatMode else {
+            let raw = schedule.conditionID.trimmingCharacters(in: .whitespaces)
+            return raw.isEmpty ? nil : "繰り返し \(raw)"
+        }
+        return repeatMode == .once ? nil : label(repeatMode)
     }
 }
