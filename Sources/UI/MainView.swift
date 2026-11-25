@@ -13,8 +13,8 @@ struct MainView: View {
     let openViewer: (() -> Void)?
     /// 選んでいる切り替えの項目（保存する。知らない値〔前の「設定」を含む〕なら既定の「情報」）
     @AppStorage(MainWindowSettingsKey.section) private var selection: MainSection = .info
-    /// 設定のシートを出しているか
-    @State private var showsSettings = false
+    /// 設定のシートを出す（シートは nasne を切り替えても開いたままにするため、外側の `MainScreen` が持つ）
+    let openSettings: () -> Void
     /// 文字の大きさ（番組表の寸法に掛け、変わったら番組表を作り直す）
     @AppStorage(MainWindowSettingsKey.textSize) private var textSize = MainTextSize.initial.rawValue
     /// 中身の幅（足りなければ「ライブ」「設定」の文字を省く。狭い幅の番組表の列の幅にも使う）
@@ -27,16 +27,16 @@ struct MainView: View {
     /// 集約ステータスの見回り（一覧ごとの世代と、nasne に届くか。環境が作り、ここが回す。各画面のモデルが見る）
     @State private var liveStatus: LiveStatusMonitor
     @Environment(\.scenePhase) private var scenePhase
-    @State private var credentials = CredentialsModel.live()
     /// 局のロゴの絵（録画・予約の一覧の行の頭に出す。ロゴが変わったときだけ作り直す）
     @State private var logoImages = ChannelLogoImages()
     /// 番組表にサブチャンネルも並べるか（設定。既定は隠す）
     @AppStorage(GuideSettingsKey.showsSubchannels) private var showsSubchannels = false
 
     init(services: NasneServices, liveStatus: LiveStatusMonitor, channels: ChannelCatalog, logos: ChannelLogoModel?, library: LibraryStore?,
-         viewing: ViewingRecorder?, openViewer: (() -> Void)?) {
+         viewing: ViewingRecorder?, openViewer: (() -> Void)?, openSettings: @escaping () -> Void) {
         self.services = services
         self.openViewer = openViewer
+        self.openSettings = openSettings
         _liveStatus = State(initialValue: liveStatus)
         _info = State(initialValue: InfoModel(services: services, liveStatus: liveStatus))
         _recordings = State(initialValue: RecordingsModel(services: services, channels: channels, library: library, viewing: viewing,
@@ -102,16 +102,13 @@ struct MainView: View {
             .onChange(of: showsSubchannels) { lineup.showsSubchannels = showsSubchannels }
             .environment(logoImages)
             .onChange(of: environment.channelLogos?.revision, initial: true) { logoImages.update(from: environment.channelLogos) }
-            .sheet(isPresented: $showsSettings) {
-                SettingsSheet(services: services, credentials: credentials) { showsSettings = false }
-            }
             // メニュー：録画と予約のモデルを渡し（項目の有効・無効に使う）、設定…（⌘,）の頼みを受ける
             .onAppear {
                 environment.mainCommands.recordings = recordings
                 environment.mainCommands.schedules = schedules
             }
             .onChange(of: environment.mainCommands.pending, initial: true) {
-                if environment.mainCommands.consume(.settings) { showsSettings = true }
+                if environment.mainCommands.consume(.settings) { openSettings() }
                 if environment.mainCommands.consume(.watchLive) { watchLive?(nil) }
             }
     }
@@ -164,7 +161,7 @@ struct MainView: View {
                             .help("ライブで見る（前に見た局）")
                             .disabled(environment.live == nil || !liveStatus.isOnline)
                     }
-                    Button { showsSettings = true } label: { Label("設定", systemImage: MainToolbarSymbol.settings) }
+                    Button(action: openSettings) { Label("設定", systemImage: MainToolbarSymbol.settings) }
                         .labelStyle(.iconOnly)
                         .help("設定を開く")
                 }
@@ -176,7 +173,7 @@ struct MainView: View {
     private var barAccessories: MainBarAccessories {
         MainBarAccessories(watchLive: watchLive.map { watch in { watch(nil) } },
                            liveDisabled: environment.live == nil || !liveStatus.isOnline,
-                           openSettings: { showsSettings = true })
+                           openSettings: openSettings)
     }
 
     /// 知らせ（読み込み中・誤り・操作の結果。全部の画面のものをここに出す）。切り替えのすぐ上に浮かべる板（2026-11-23。前は窓の下端の帯）
@@ -290,6 +287,33 @@ struct MainView: View {
 private struct LiveStatusRunKey: Hashable {
     let isActive: Bool
     let token: Int
+}
+
+/// 主ウインドウ（iPad・iPhone は主画面）の中身：登録した nasne の画面と、設定のシート。
+///
+/// nasne のアドレスが変わった・台を切り替えた・台を足した・外したときは、画面（`MainView`）を開き直す
+/// （画面のモデルが前の部品を持っているため）。設定のシートはその外側に置き、開き直しても開いたままにする
+/// （設定の一覧で台を選ぶたびにシートが閉じないように。2026-11-25 に決めた）
+struct MainScreen: View {
+    @Environment(AppEnvironment.self) private var environment
+    let services: NasneServices
+    let liveStatus: LiveStatusMonitor
+    let channels: ChannelCatalog
+    let openViewer: (() -> Void)?
+    /// 設定のシートを出しているか
+    @State private var showsSettings = false
+    /// 資格情報（nasne ごとではないので、台を切り替えても同じものを使う）
+    @State private var credentials = CredentialsModel.live()
+
+    var body: some View {
+        MainView(services: services, liveStatus: liveStatus, channels: channels, logos: environment.channelLogos,
+                 library: environment.library, viewing: environment.viewing, openViewer: openViewer,
+                 openSettings: { showsSettings = true })
+            .id(MainViewIdentity(udn: services.registration.udn, host: services.registration.host))
+            .sheet(isPresented: $showsSettings) {
+                SettingsSheet(services: services, credentials: credentials) { showsSettings = false }
+            }
+    }
 }
 
 /// 主ウインドウを作り直す鍵（登録した nasne と、そのアドレス）

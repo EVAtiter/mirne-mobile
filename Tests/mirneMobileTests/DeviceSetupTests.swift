@@ -17,56 +17,167 @@ private func temporaryStoreURL() -> URL {
         .appendingPathComponent("registration.json")
 }
 
+private func sampleRegistration(_ device: NasneDevice, mac: String = sampleMAC) -> RegisteredNasne {
+    RegisteredNasne(host: device.host, udn: device.udn, friendlyName: device.friendlyName, macAddress: mac,
+                    registeredAt: Date(timeIntervalSince1970: 1_800_000_000))
+}
+
 @Suite("登録の保存")
 struct RegistrationStoreTests {
-    @Test("保存して読み戻せる。control URL も戻り、MAC アドレスはファイルに書かず Keychain の側にだけある")
+    @Test("保存して読み戻せる。control URL も戻り、MAC アドレスはファイルに書かず Keychain の台ごとの account にだけある")
     func roundTrip() throws {
         let url = temporaryStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let secrets = MemorySecretStore()
         let store = FileRegistrationStore(fileURL: url, secrets: secrets)
-        #expect(try store.load() == nil)
+        #expect(try store.load() == .empty)
         let device = sampleDevice()
-        let registration = RegisteredNasne(host: device.host, udn: device.udn, friendlyName: device.friendlyName,
-                                           macAddress: sampleMAC, registeredAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let registration = sampleRegistration(device)
         try store.save(registration, device: device)
         let file = try String(contentsOf: url, encoding: .utf8)
         #expect(!file.contains(sampleMAC))
         #expect(!file.lowercased().contains("macaddress"))
-        #expect(try secrets.read(account: FileRegistrationStore.macAccount) == sampleMAC)
-        let loaded = try #require(try store.load())
+        #expect(try secrets.read(account: FileRegistrationStore.macAccount(for: device.udn)) == sampleMAC)
+        let loaded = try #require(try store.load().selected)
         #expect(loaded.registration == registration)
         #expect(loaded.device == device)
         #expect(loaded.device.controlURL(for: NasneProfiles.standard.soap.scheduledRecording) == device.controlURL(for: NasneProfiles.standard.soap.scheduledRecording))
     }
 
-    @Test("Keychain に MAC アドレスが無ければ、登録は無いものとして読む。消すと両方消える")
-    func missingSecretAndDelete() throws {
+    @Test("2 台を持てる。選んだ台が読み戻り、同じ UDN の保存は書き換え（アドレスが変わったとき）で選びは変えない")
+    func multipleDevices() throws {
         let url = temporaryStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let secrets = MemorySecretStore()
         let store = FileRegistrationStore(fileURL: url, secrets: secrets)
-        let device = sampleDevice()
-        try store.save(RegisteredNasne(host: device.host, udn: device.udn, friendlyName: device.friendlyName, macAddress: sampleMAC),
-                       device: device)
-        try secrets.delete(account: FileRegistrationStore.macAccount)
-        #expect(try store.load() == nil)
-        try store.save(RegisteredNasne(host: device.host, udn: device.udn, friendlyName: device.friendlyName, macAddress: sampleMAC),
-                       device: device)
-        try store.delete()
-        #expect(!FileManager.default.fileExists(atPath: url.path))
-        #expect(try secrets.read(account: FileRegistrationStore.macAccount) == nil)
-        try store.delete()   // 2 回目も誤りにならない
+        let first = sampleDevice(udn: "uuid:sample-1", name: "nasne")
+        let second = sampleDevice(udn: "uuid:sample-2", name: "nasne")
+        try store.save(sampleRegistration(first), device: first)
+        try store.save(sampleRegistration(second, mac: "00:00:5e:00:53:02"), device: second)
+        var list = try store.load()
+        #expect(list.entries.map(\.key) == ["uuid:sample-1", "uuid:sample-2"])
+        #expect(list.selected?.key == "uuid:sample-1")   // 選んでいなければ最初の台
+        try store.select(key: "uuid:sample-2")
+        list = try store.load()
+        #expect(list.selected?.key == "uuid:sample-2")
+        #expect(list.selected?.registration.macAddress == "00:00:5e:00:53:02")
+        // 1 台目のアドレスが変わった：書き換えで、台の数と選びは変わらない
+        var moved = sampleRegistration(first)
+        moved.host = "moved"
+        try store.save(moved, device: first)
+        list = try store.load()
+        #expect(list.entries.count == 2)
+        #expect(list.entries.first?.registration.host == "moved")
+        #expect(list.selected?.key == "uuid:sample-2")
+        try store.select(key: "uuid:unknown")   // 一覧に無い鍵は何もしない
+        #expect(try store.load().selected?.key == "uuid:sample-2")
     }
 
-    @Test("壊れたファイルは parse の誤りにする")
-    func brokenFile() throws {
+    @Test("1 台を外すと、その台の MAC アドレスも消え、選んでいた台なら最初の台に戻る。最後の台でファイルも消える")
+    func deleteOne() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let secrets = MemorySecretStore()
+        let store = FileRegistrationStore(fileURL: url, secrets: secrets)
+        let first = sampleDevice(udn: "uuid:sample-1")
+        let second = sampleDevice(udn: "uuid:sample-2")
+        try store.save(sampleRegistration(first), device: first)
+        try store.save(sampleRegistration(second), device: second)
+        try store.select(key: "uuid:sample-2")
+        try store.delete(key: "uuid:sample-2")
+        #expect(try secrets.read(account: FileRegistrationStore.macAccount(for: "uuid:sample-2")) == nil)
+        #expect(try secrets.read(account: FileRegistrationStore.macAccount(for: "uuid:sample-1")) == sampleMAC)
+        #expect(try store.load().selected?.key == "uuid:sample-1")
+        try store.delete(key: "uuid:sample-1")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(try store.load() == .empty)
+        try store.delete(key: "uuid:sample-1")   // 2 回目も誤りにならない
+    }
+
+    @Test("Keychain に MAC アドレスが無い台は、登録が無いものとして読む（ほかの台は読む）")
+    func missingSecret() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let secrets = MemorySecretStore()
+        let store = FileRegistrationStore(fileURL: url, secrets: secrets)
+        let first = sampleDevice(udn: "uuid:sample-1")
+        let second = sampleDevice(udn: "uuid:sample-2")
+        try store.save(sampleRegistration(first), device: first)
+        try store.save(sampleRegistration(second), device: second)
+        try secrets.delete(account: FileRegistrationStore.macAccount(for: "uuid:sample-1"))
+        #expect(try store.load().entries.map(\.key) == ["uuid:sample-2"])
+    }
+
+    @Test("1.6 までの形（登録 1 台・MAC は 1 つの account）を読むと、一覧の形へ移して古い account を消す")
+    func migratesSingleRegistration() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let secrets = MemorySecretStore()
+        let device = sampleDevice()
+        // 1.6 までの形のファイル：登録 1 台の項目に版 1 の欄を足したもの
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(try JSONSerialization.jsonObject(
+            with: encoder.encode(SavedRegistration(registration: sampleRegistration(device), device: device))) as? [String: Any])
+        object["version"] = 1
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        try secrets.write(sampleMAC, account: FileRegistrationStore.singleMacAccount)
+
+        let store = FileRegistrationStore(fileURL: url, secrets: secrets)
+        let list = try store.load()
+        #expect(list.entries.count == 1)
+        #expect(list.selected?.registration == sampleRegistration(device))
+        #expect(list.selected?.device == device)
+        #expect(try secrets.read(account: FileRegistrationStore.singleMacAccount) == nil)
+        #expect(try secrets.read(account: FileRegistrationStore.macAccount(for: device.udn)) == sampleMAC)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let saved = try decoder.decode(SavedRegistrationList.self, from: Data(contentsOf: url))
+        #expect(saved.version == SavedRegistrationList.currentVersion)
+        #expect(saved.selected == device.udn)
+        #expect(try store.load() == list)   // 2 回目は移したものをそのまま読む
+    }
+
+    @Test("壊れたファイルは parse の誤り、新しい版の形は unsupported の誤りにする")
+    func brokenOrNewerFile() throws {
         let url = temporaryStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("{".utf8).write(to: url)
         let store = FileRegistrationStore(fileURL: url, secrets: MemorySecretStore())
         #expect(throws: NasneError.self) { try store.load() }
+        try Data(#"{"version": 99, "devices": []}"#.utf8).write(to: url)
+        #expect(throws: NasneError.self) { try store.load() }
+    }
+}
+
+@Suite("登録した nasne の呼び名")
+struct NasneDisplayNameTests {
+    private func entry(_ udn: String, name: String, model: String) -> StoredNasne {
+        let direct = NasneDevice.direct(host: NasneFixture.host)
+        let device = NasneDevice(host: direct.host, descriptionURL: direct.descriptionURL, friendlyName: name, modelName: model,
+                                 manufacturer: "test", udn: udn, services: direct.services)
+        return StoredNasne(registration: sampleRegistration(device), device: device)
+    }
+
+    @Test("名前が違えばそのまま。同じ名前なら作り手を、作り手も同じなら登録の順の番号を添える")
+    func disambiguates() {
+        let entries = [
+            entry("uuid:1", name: "nasne", model: NasneDevice.nasneModelName),
+            entry("uuid:2", name: "nasne", model: NasneDevice.nasneModelName),
+            entry("uuid:3", name: "nasne", model: NasneDevice.buffaloNasneModelName),
+            entry("uuid:4", name: "居間", model: NasneDevice.buffaloNasneModelName),
+            entry("uuid:5", name: " ", model: NasneDevice.buffaloNasneModelName),
+        ]
+        let names = NasneDisplayName.names(for: entries)
+        #expect(names["uuid:1"] == "nasne（SIE・1）")
+        #expect(names["uuid:2"] == "nasne（SIE・2）")
+        #expect(names["uuid:3"] == "nasne（Buffalo・1）")
+        #expect(names["uuid:4"] == "居間")
+        #expect(names["uuid:5"] == "nasne（Buffalo・2）")   // 空の名前は「nasne」として数える
+        let pair = NasneDisplayName.names(for: [entries[0], entries[2]])
+        #expect(pair["uuid:1"] == "nasne（SIE）" && pair["uuid:3"] == "nasne（Buffalo）")
     }
 }
 
@@ -97,11 +208,17 @@ private struct FakeRegistration: RegistrationService {
 /// 試験用の保存先
 private final class MemoryRegistrationStore: RegistrationStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var saved: (RegisteredNasne, NasneDevice)?
-    var savedRegistration: RegisteredNasne? { lock.withLock { saved?.0 } }
-    func load() throws -> (registration: RegisteredNasne, device: NasneDevice)? { lock.withLock { saved.map { ($0.0, $0.1) } } }
-    func save(_ registration: RegisteredNasne, device: NasneDevice) throws { lock.withLock { saved = (registration, device) } }
-    func delete() throws { lock.withLock { saved = nil } }
+    private var list = RegistrationList.empty
+    var savedRegistration: RegisteredNasne? { lock.withLock { list.entries.last?.registration } }
+    func load() throws -> RegistrationList { lock.withLock { list } }
+    func save(_ registration: RegisteredNasne, device: NasneDevice) throws {
+        lock.withLock {
+            let entry = StoredNasne(registration: registration, device: device)
+            if let index = list.entries.firstIndex(where: { $0.key == entry.key }) { list.entries[index] = entry } else { list.entries.append(entry) }
+        }
+    }
+    func select(key: String) throws { lock.withLock { list.selectedKey = key } }
+    func delete(key: String) throws { lock.withLock { list.entries.removeAll { $0.key == key } } }
 }
 
 @MainActor

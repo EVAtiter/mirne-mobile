@@ -24,6 +24,7 @@ import ImageIO
 //   mirne-mobile-probe protect-title --host <nasne> --at "yyyy-MM-dd HH:mm" [--send --protect|--unprotect]   （★書き込み。試しの録画の保護を 1 回切り替える。合意を取ってから）
 //   mirne-mobile-probe resume-position --host <nasne> --at "yyyy-MM-dd HH:mm" [--send --seconds <秒>]   （★書き込み。試しの録画の再開位置を 1 回書く。合意を取ってから）
 //   mirne-mobile-probe p6        --host <nasne> [--chapter-limit 60] [--metadata-samples 5]   （1.1.0 の機能の下調べ。読み取りだけ）
+//   mirne-mobile-probe fake-nasne [--udn uuid:…] [--name <本体名>] [--model nasne|buffalo-nasne] [--mac <MAC>]   （偽の nasne を待ち受ける。nasne に何も送らない）
 //   mirne-mobile-probe view      [--file <TS> [--snapshot <PNG> --snapshot-at <秒>]] [--quality …] [--pick …] [--seek <秒>]
 //                                [--seconds 30] [--deinterlace adaptive|bob|weave] [--mute]   （窓を開いて描く）
 //
@@ -51,6 +52,7 @@ let subcommands: [(name: String, summary: String)] = [
     ("protect-title", "★書き込み：試しの録画の保護を 1 回切り替え、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
     ("repeat-schedule", "★書き込み：試しの予約に繰り返しの値を入れる（変更か作り直し）。応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
     ("resume-position", "★書き込み：試しの録画の再開位置を 1 回書き、応答と一覧の変化を見る（--send が無ければ送らない。合意を取ってから）"),
+    ("fake-nasne", "偽の nasne を待ち受け、単体試験の素材を返す（複数台の nasne の確かめ用。2 台目として登録する。nasne に何も送らない）"),
     ("p6", "1.1.0 の機能の下調べ：局のロゴ（地上・BS・CS）・Browse の順・BrowseMetadata・保存した res と今の res・チャプターを読み取りだけで測る"),
     ("extras", "pydtcpip が使う読み取りの口（\(ExtrasEndpoints.remoteAPIPort) の titleListGet・チャプター、"
         + "\(ExtrasEndpoints.webAPIPort) のサムネイル）が通るかを見る（GET だけ）"),
@@ -494,6 +496,7 @@ do {
     case "resume-position": try await ResumePositionCommand.run()
     case "repeat-schedule": try await RepeatScheduleCommand.run()
     case "p6": try await Phase6Command.run()
+    case "fake-nasne": try await FakeNasneCommand.run()
     default: printUsage(); exit(64)
     }
 } catch {

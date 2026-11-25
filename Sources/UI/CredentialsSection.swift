@@ -47,19 +47,16 @@ struct CredentialsSection: View {
                 SettingsNote("録画を見るには、資格情報を取り込みます。",
                              details: ["利用者が自分の機器から得た自分の資格情報（証明書と秘密鍵）です。"])
             }
+            // 取り込む・削除の段（Mac は右寄せで、削除を左・取り込みを右。iPad・iPhone は今までの並び。`SettingsActionLayout`）
             HStack {
-                Button(model.summary.value.flatMap { $0 } == nil ? "ファイルから取り込む…" : "取り込み直す…") {
-                    importer = .files
-                    showsImporter = true
-                }
-                .help("証明書と秘密鍵の 2 つのファイルを一緒に選びます（バイナリ・16 進・base64）")
-                Button("credentials.env から取り込む…") {
-                    importer = .dotEnv
-                    showsImporter = true
-                }
-                Spacer()
-                if model.summary.value.flatMap({ $0 }) != nil {
-                    Button("削除…", role: .destructive) { confirmingDelete = true }
+                if SettingsActionLayout.usesRows {
+                    importButtons
+                    Spacer()
+                    deleteButton
+                } else {
+                    Spacer()
+                    deleteButton
+                    importButtons
                 }
             }
             .disabled(model.isWorking)
@@ -90,10 +87,32 @@ struct CredentialsSection: View {
                 }
             }
         }
-        .confirmationDialog("資格情報を削除しますか？", isPresented: $confirmingDelete) {
+        // 確かめはアラート（nasne の登録を外す・録画と予約の削除と同じ形。確かめの選択肢の形は iPad でボタンの吹き出しになる。2026-11-25）
+        .alert("資格情報を削除しますか？", isPresented: $confirmingDelete) {
+            Button("キャンセル", role: .cancel) {}
             Button("削除", role: .destructive) { Task { await model.delete() } }
         } message: {
             Text("キーチェーンから消します。録画を見るには、もう一度取り込む必要があります。")
+        }
+    }
+
+    /// 取り込みのボタン（2 つのファイル・credentials.env）
+    @ViewBuilder private var importButtons: some View {
+        Button(model.summary.value.flatMap { $0 } == nil ? "ファイルから取り込む…" : "取り込み直す…") {
+            importer = .files
+            showsImporter = true
+        }
+        .help("証明書と秘密鍵の 2 つのファイルを一緒に選びます（バイナリ・16 進・base64）")
+        Button("credentials.env から取り込む…") {
+            importer = .dotEnv
+            showsImporter = true
+        }
+    }
+
+    /// 削除のボタン（取り込み済みのときだけ）
+    @ViewBuilder private var deleteButton: some View {
+        if model.summary.value.flatMap({ $0 }) != nil {
+            Button("削除…", role: .destructive) { confirmingDelete = true }
         }
     }
 

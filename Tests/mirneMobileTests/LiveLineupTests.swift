@@ -180,7 +180,7 @@ struct LiveModelTests {
     @Test("読むまでは見られるか分からない。読んだら局ごとに見られるか・理由が分かる。ライブの一覧は地上の帯域だけを読む")
     func availability() async {
         let catalog = TerrestrialOnly(live: LiveLineupTests.liveChannels)
-        let model = LiveModel(channels: ChannelCatalog(deviceInfo: LiveChannelsOnly(channels: channels)), catalog: catalog, programGuide: nil, defaults: defaults())
+        let model = LiveModel(channels: ChannelCatalog(deviceInfo: LiveChannelsOnly(channels: channels)), catalog: catalog, programGuide: nil, nasneKey: "uuid:test-1", defaults: defaults())
         #expect(model.availability(of: channels[2]) == .unknown)
         await model.load()
         #expect(model.availability(of: channels[2]) == .available)
@@ -193,7 +193,7 @@ struct LiveModelTests {
     func reloadAndPrograms() async {
         let device = LiveChannelsOnly(channels: channels)
         let catalog = TerrestrialOnly(live: LiveLineupTests.liveChannels)
-        let model = LiveModel(channels: ChannelCatalog(deviceInfo: device), catalog: catalog, programGuide: nil, defaults: defaults())
+        let model = LiveModel(channels: ChannelCatalog(deviceInfo: device), catalog: catalog, programGuide: nil, nasneKey: "uuid:test-1", defaults: defaults())
         await model.load()
         await model.load()
         #expect(device.calls == 1 && catalog.calls == 1)
@@ -207,11 +207,11 @@ struct LiveModelTests {
     func remembersLastStation() {
         let store = defaults()
         let model = LiveModel(channels: ChannelCatalog(deviceInfo: LiveChannelsOnly(channels: channels)), catalog: TerrestrialOnly(live: []),
-                              programGuide: nil, defaults: store)
+                              programGuide: nil, nasneKey: "uuid:test-1", defaults: store)
         #expect(model.lastStation == nil)
         model.lastStation = key(0x4030)
         #expect(LiveModel(channels: ChannelCatalog(deviceInfo: LiveChannelsOnly(channels: channels)), catalog: TerrestrialOnly(live: []),
-                          programGuide: nil, defaults: store).lastStation == key(0x4030))
+                          programGuide: nil, nasneKey: "uuid:test-1", defaults: store).lastStation == key(0x4030))
     }
 }
 

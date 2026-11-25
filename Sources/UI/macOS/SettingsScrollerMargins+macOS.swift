@@ -32,3 +32,10 @@ extension View {
         modifier(SettingsScrollerMargins())
     }
 }
+
+/// 設定の節の、足す・外す（取り込む・削除）の置き方（macOS 版：ボタンの段を右寄せにし、消す操作を左・主な操作を右に置く。
+/// 「nasne」の節は「登録を外す…」「nasne を追加…」、資格情報の節は「削除…」「取り込む…」「credentials.env から取り込む…」の順。2026-11-25 に決めた）
+enum SettingsActionLayout {
+    /// 節の行として置くか（偽なら右寄せのボタンの段）
+    static let usesRows = false
+}

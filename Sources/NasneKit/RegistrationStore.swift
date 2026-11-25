@@ -3,8 +3,9 @@ import Security
 
 // 登録した nasne の保存（「登録の保存はアトミックに」）。
 //
+// - 登録は何台でも持てる。いま見ている 1 台（選んでいる台）も一緒に保存する
 // - アドレス・名前・記述から解いた control URL はファイル（JSON）に、アトミックに書く
-// - PIN の素になる MAC アドレスはファイルに書かず、Keychain に置く（ログ・画面にも出さない）
+// - PIN の素になる MAC アドレスはファイルに書かず、Keychain に台ごとに置く（ログ・画面にも出さない）
 
 /// 秘密の値の置き場（Keychain。試験ではメモリ）
 public protocol SecretStore: Sendable {
@@ -72,18 +73,53 @@ public final class MemorySecretStore: SecretStore, @unchecked Sendable {
     public func delete(account: String) throws { _ = lock.withLock { values.removeValue(forKey: account) } }
 }
 
-/// ファイルに書く登録の中身（MAC アドレスを含めない）
-struct SavedRegistration: Codable, Equatable {
-    /// 書式の版（形を変えたら上げて、古い形を読み替える）
-    static let currentVersion = 1
+/// 登録した nasne 1 台（登録と、記述から解いた機器）
+public struct StoredNasne: Sendable, Equatable {
+    public var registration: RegisteredNasne
+    public var device: NasneDevice
 
+    public init(registration: RegisteredNasne, device: NasneDevice) {
+        self.registration = registration
+        self.device = device
+    }
+
+    /// 台を見分ける鍵（記述の UDN。UDN の無い機器はアドレス）
+    public var key: String { registration.storageKey }
+}
+
+extension RegisteredNasne {
+    /// 登録を見分ける鍵（記述の UDN。UDN の無い機器はアドレス。探し直しも UDN で行う）
+    public var storageKey: String { udn.isEmpty ? host : udn }
+}
+
+/// 保存した登録の一覧と、選んでいる台
+public struct RegistrationList: Sendable, Equatable {
+    /// 登録した順
+    public var entries: [StoredNasne]
+    /// 選んでいる台の鍵（無い・一覧に無ければ最初の台）
+    public var selectedKey: String?
+
+    public init(entries: [StoredNasne] = [], selectedKey: String? = nil) {
+        self.entries = entries
+        self.selectedKey = selectedKey
+    }
+
+    public static let empty = RegistrationList()
+
+    /// 選んでいる台（登録が無ければ nil）
+    public var selected: StoredNasne? {
+        entries.first { $0.key == selectedKey } ?? entries.first
+    }
+}
+
+/// ファイルに書く登録 1 台の中身（MAC アドレスを含めない）
+struct SavedRegistration: Codable, Equatable {
     struct Service: Codable, Equatable {
         var controlURL: URL
         var scpdURL: URL?
         var eventSubURL: URL?
     }
 
-    var version: Int
     var host: String
     var udn: String
     var friendlyName: String
@@ -95,7 +131,6 @@ struct SavedRegistration: Codable, Equatable {
     var registeredAt: Date?
 
     init(registration: RegisteredNasne, device: NasneDevice) {
-        version = Self.currentVersion
         host = registration.host
         udn = registration.udn
         friendlyName = registration.friendlyName
@@ -106,6 +141,8 @@ struct SavedRegistration: Codable, Equatable {
         registeredAt = registration.registeredAt
     }
 
+    var key: String { udn.isEmpty ? host : udn }
+
     var device: NasneDevice {
         NasneDevice(host: host, descriptionURL: descriptionURL, friendlyName: friendlyName, modelName: modelName,
                     manufacturer: manufacturer, udn: udn,
@@ -114,20 +151,47 @@ struct SavedRegistration: Codable, Equatable {
                                                scpdURL: service.scpdURL, eventSubURL: service.eventSubURL))
                     }))
     }
+
+    func registration(macAddress: String) -> RegisteredNasne {
+        RegisteredNasne(host: host, udn: udn, friendlyName: friendlyName, macAddress: macAddress, registeredAt: registeredAt)
+    }
 }
 
-/// 登録した nasne（1 台）の保存先
+/// 保存のファイルの中身（書式の版 2：登録の一覧と選んでいる台）
+struct SavedRegistrationList: Codable, Equatable {
+    /// 書式の版（形を変えたら上げて、古い形を読み替える）。
+    /// 1 = 登録 1 台をそのまま書いた形（1.6 まで）、2 = 一覧と選んでいる台（2026-11-25。複数台の nasne）
+    static let currentVersion = 2
+    static let singleRegistrationVersion = 1
+
+    var version: Int
+    var selected: String?
+    var devices: [SavedRegistration]
+}
+
+/// 書式の版だけを読む
+private struct SavedRegistrationVersion: Decodable {
+    var version: Int
+}
+
+/// 登録した nasne の保存先
 public protocol RegistrationStore: Sendable {
-    /// 保存した登録。無い・MAC アドレスが Keychain に無いときは nil
-    func load() throws -> (registration: RegisteredNasne, device: NasneDevice)?
+    /// 保存した登録の一覧（無ければ空）。MAC アドレスが Keychain に無い台は含めない
+    func load() throws -> RegistrationList
+    /// 登録を足す。同じ台（UDN が同じ）があれば書き換える（アドレスが変わったときも）。選んでいる台は変えない
     func save(_ registration: RegisteredNasne, device: NasneDevice) throws
-    func delete() throws
+    /// 選んでいる台を変える（一覧に無い鍵は何もしない）
+    func select(key: String) throws
+    /// 1 台の登録を外す（Keychain の MAC アドレスも消す）。選んでいた台なら、選びを外す（読むと最初の台になる）
+    func delete(key: String) throws
 }
 
 /// ファイル（JSON）と Keychain に分けて保存する
 public struct FileRegistrationStore: RegistrationStore {
-    /// MAC アドレスを置く Keychain の account（登録は 1 台だけ）
-    static let macAccount = "registered-nasne-mac"
+    /// MAC アドレスを置く Keychain の account の頭（後ろに台の鍵を付ける）
+    static let macAccountPrefix = "registered-nasne-mac:"
+    /// 書式の版 1 の、MAC アドレスの account（登録は 1 台だけだった。読み替えのときにだけ読む）
+    static let singleMacAccount = "registered-nasne-mac"
     /// 既定の保存先のファイル名
     static let fileName = "registration.json"
 
@@ -146,42 +210,100 @@ public struct FileRegistrationStore: RegistrationStore {
                                      secrets: KeychainSecretStore())
     }
 
-    public func load() throws -> (registration: RegisteredNasne, device: NasneDevice)? {
+    /// 台の MAC アドレスの account
+    static func macAccount(for key: String) -> String { macAccountPrefix + key }
+
+    public func load() throws -> RegistrationList {
+        guard let saved = try readFile() else { return .empty }
+        var entries: [StoredNasne] = []
+        for device in saved.devices {
+            // MAC アドレスが無ければ（Keychain を消した・別の端末から写した）、その台は登録が無いものとして扱う
+            guard let mac = try secrets.read(account: Self.macAccount(for: device.key)) else { continue }
+            entries.append(StoredNasne(registration: device.registration(macAddress: mac), device: device.device))
+        }
+        return RegistrationList(entries: entries, selectedKey: saved.selected)
+    }
+
+    public func save(_ registration: RegisteredNasne, device: NasneDevice) throws {
+        var saved = try readFile() ?? SavedRegistrationList(version: SavedRegistrationList.currentVersion, selected: nil, devices: [])
+        let entry = SavedRegistration(registration: registration, device: device)
+        // 先に Keychain、次にファイル（ファイルにだけ載って MAC が無い台は、load が「登録なし」と読む）
+        try secrets.write(registration.macAddress, account: Self.macAccount(for: entry.key))
+        if let index = saved.devices.firstIndex(where: { $0.key == entry.key }) {
+            saved.devices[index] = entry
+        } else {
+            saved.devices.append(entry)
+        }
+        try writeFile(saved)
+    }
+
+    public func select(key: String) throws {
+        guard var saved = try readFile(), saved.devices.contains(where: { $0.key == key }), saved.selected != key else { return }
+        saved.selected = key
+        try writeFile(saved)
+    }
+
+    public func delete(key: String) throws {
+        if var saved = try readFile() {
+            saved.devices.removeAll { $0.key == key }
+            if saved.selected == key { saved.selected = nil }
+            if saved.devices.isEmpty {
+                try FileManager.default.removeItem(at: fileURL)
+            } else {
+                try writeFile(saved)
+            }
+        }
+        try secrets.delete(account: Self.macAccount(for: key))
+    }
+
+    /// ファイルを読む（無ければ nil）。書式の版 1 なら版 2 へ読み替えて書き直す
+    private func readFile() throws -> SavedRegistrationList? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let saved: SavedRegistration
+        let version: Int
         do {
-            saved = try decoder.decode(SavedRegistration.self, from: data)
+            version = try decoder.decode(SavedRegistrationVersion.self, from: data).version
         } catch {
             throw NasneError.parse("registration:load", "the saved registration could not be read")
         }
-        guard saved.version <= SavedRegistration.currentVersion else {
+        guard version <= SavedRegistrationList.currentVersion else {
             throw NasneError.unsupported("registration:load", "saved by a newer version")
         }
-        // MAC アドレスが無ければ（Keychain を消した・別の Mac から写した）、登録は無いものとして扱う
-        guard let mac = try secrets.read(account: Self.macAccount) else { return nil }
-        let registration = RegisteredNasne(host: saved.host, udn: saved.udn, friendlyName: saved.friendlyName,
-                                           macAddress: mac, registeredAt: saved.registeredAt)
-        return (registration, saved.device)
+        do {
+            if version == SavedRegistrationList.singleRegistrationVersion {
+                // 版 1 のファイルは登録 1 台をそのまま書いた形（版の欄のほかは版 2 の 1 台と同じ）
+                return try migrate(decoder.decode(SavedRegistration.self, from: data))
+            }
+            return try decoder.decode(SavedRegistrationList.self, from: data)
+        } catch let error as NasneError {
+            throw error
+        } catch {
+            throw NasneError.parse("registration:load", "the saved registration could not be read")
+        }
     }
 
-    public func save(_ registration: RegisteredNasne, device: NasneDevice) throws {
+    /// 書式の版 1（登録 1 台）を版 2 へ移す。MAC アドレスを台ごとの account へ写し、ファイルを書き直してから古い account を消す
+    /// （途中で止まっても、版 1 のファイルと古い account が残るので、次に読んだときにやり直せる）
+    private func migrate(_ single: SavedRegistration) throws -> SavedRegistrationList {
+        let list = SavedRegistrationList(version: SavedRegistrationList.currentVersion, selected: single.key, devices: [single])
+        guard let mac = try secrets.read(account: Self.singleMacAccount) else {
+            // MAC アドレスが無い（版 1 でも登録なしと読んでいた形）。ファイルは書き直さず、その台は読まない
+            return list
+        }
+        try secrets.write(mac, account: Self.macAccount(for: single.key))
+        try writeFile(list)
+        try secrets.delete(account: Self.singleMacAccount)
+        return list
+    }
+
+    private func writeFile(_ saved: SavedRegistrationList) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(SavedRegistration(registration: registration, device: device))
-        // 先に Keychain、次にファイル（ファイルだけ残って MAC が無い形は、load が「登録なし」と読む）
-        try secrets.write(registration.macAddress, account: Self.macAccount)
+        let data = try encoder.encode(saved)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: fileURL, options: .atomic)
-    }
-
-    public func delete() throws {
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            try FileManager.default.removeItem(at: fileURL)
-        }
-        try secrets.delete(account: Self.macAccount)
     }
 }

@@ -172,6 +172,36 @@ struct ProgramGuideModelTests {
         try ProgramGuideFiles.delete(storeURL: url)   // 無くても誤りにしない
     }
 
+    @Test("番組表は台ごとのフォルダーに置く。前の版の 1 つの番組表は、台の番組表が無いときだけ移す。消すと台のフォルダーも消える")
+    func perNasneFiles() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mirne-mobile-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        #expect(ProgramGuideFiles.folderName(for: "uuid:ab-12/x") == "uuid_ab-12_x")
+        #expect(ProgramGuideFiles.folderName(for: "..") == "_")
+        let real = try ProgramGuideFiles.storeURL(for: "uuid:sample-1")
+        #expect(real.lastPathComponent == "epg.sqlite")
+        #expect(real.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "nasne")
+
+        let legacy = base.appendingPathComponent("epg.sqlite")
+        let store = base.appendingPathComponent("nasne").appendingPathComponent("uuid_sample-1").appendingPathComponent("epg.sqlite")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: legacy.path, contents: Data("old".utf8))
+        FileManager.default.createFile(atPath: legacy.path + "-wal", contents: Data("wal".utf8))
+        FileManager.default.createFile(atPath: ProgramGuideFiles.versionURL(storeURL: legacy).path, contents: Data("v".utf8))
+        ProgramGuideFiles.moveLegacy(from: legacy, to: store)
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+        #expect(try String(contentsOf: store, encoding: .utf8) == "old")
+        #expect(FileManager.default.fileExists(atPath: store.path + "-wal"))
+        #expect(FileManager.default.fileExists(atPath: ProgramGuideFiles.versionURL(storeURL: store).path))
+        // 台の番組表があれば、前の版のものは移さない
+        FileManager.default.createFile(atPath: legacy.path, contents: Data("older".utf8))
+        ProgramGuideFiles.moveLegacy(from: legacy, to: store)
+        #expect(try String(contentsOf: store, encoding: .utf8) == "old")
+        try ProgramGuideFiles.delete(storeURL: store)
+        #expect(!FileManager.default.fileExists(atPath: store.deletingLastPathComponent().path))
+        #expect(FileManager.default.fileExists(atPath: legacy.path))   // 台のものだけ消す
+    }
+
     @Test("控えのファイルの行き来")
     func versionFile() throws {
         let url = temporaryStoreURL()

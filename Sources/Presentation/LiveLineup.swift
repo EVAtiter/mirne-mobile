@@ -175,8 +175,19 @@ public enum LiveLineup {
 
 /// ライブの設定の鍵（UserDefaults）
 public enum LiveSettingsKey {
-    /// 前に見た局（`LiveStationKey.storageValue`）。登録を外したら消す
-    public static let lastStation = "liveLastStation"
+    /// 1.6 までの、前に見た局（登録は 1 台だけだった。台ごとの鍵へ移すときにだけ読む）
+    static let legacyLastStation = "liveLastStation"
+
+    /// 前に見た局（`LiveStationKey.storageValue`。nasne ごと）。その台の登録を外したら消す
+    public static func lastStation(nasne key: String) -> String { legacyLastStation + ":" + key }
+
+    /// 1.6 までの前に見た局があれば、台の鍵へ移す（台の鍵に値が無いときだけ）
+    public static func moveLegacyLastStation(to key: String, defaults: UserDefaults = .standard) {
+        guard let value = defaults.string(forKey: legacyLastStation) else { return }
+        if defaults.string(forKey: lastStation(nasne: key)) == nil { defaults.set(value, forKey: lastStation(nasne: key)) }
+        defaults.removeObject(forKey: legacyLastStation)
+    }
+
     /// ライブを始めるときの画質（`LiveQuality` の rawValue。未設定なら DR）
     public static let defaultQuality = "liveDefaultQuality"
 }
@@ -231,23 +242,27 @@ public final class LiveModel {
     private let catalog: any LiveCatalogService
     private let programGuide: EPGStore?
     private let defaults: UserDefaults
+    /// 前に見た局を覚える鍵（nasne ごと）
+    private let lastStationKey: String
     private let now: @Sendable () -> Date
     @ObservationIgnored private var loading: Task<Void, Never>?
     private static let logger = Logger(subsystem: AppLog.subsystem, category: "live")
 
-    public init(channels: ChannelCatalog, catalog: any LiveCatalogService, programGuide: EPGStore?,
+    /// `nasneKey` は登録した台の鍵（`RegisteredNasne.storageKey`。前に見た局を台ごとに覚える）
+    public init(channels: ChannelCatalog, catalog: any LiveCatalogService, programGuide: EPGStore?, nasneKey: String,
                 defaults: UserDefaults = .standard, now: @escaping @Sendable () -> Date = Date.init) {
         channelCatalog = channels
         self.catalog = catalog
         self.programGuide = programGuide
         self.defaults = defaults
+        lastStationKey = LiveSettingsKey.lastStation(nasne: nasneKey)
         self.now = now
     }
 
     /// 前に見た局
     public var lastStation: LiveStationKey? {
-        get { defaults.string(forKey: LiveSettingsKey.lastStation).flatMap(LiveStationKey.init(storageValue:)) }
-        set { defaults.set(newValue?.storageValue, forKey: LiveSettingsKey.lastStation) }
+        get { defaults.string(forKey: lastStationKey).flatMap(LiveStationKey.init(storageValue:)) }
+        set { defaults.set(newValue?.storageValue, forKey: lastStationKey) }
     }
 
     /// 並べる局（番組表と同じ順）

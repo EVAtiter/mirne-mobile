@@ -15,6 +15,8 @@ final class AppEnvironment {
     let setup: DeviceSetupServices
     /// 登録の保存先（ファイルと Keychain）
     let store: any RegistrationStore
+    /// 登録した nasne の一覧と選んでいる台（設定の「nasne」の節に出す。読んだ・書いたたびに読み直す）
+    private(set) var registrations: RegistrationList = .empty
     /// 登録した nasne に対する部品。登録するまでは nil
     private(set) var services: NasneServices?
     /// 集約ステータスの見回り（一覧ごとの世代と、nasne に届くか。services と一緒に作り、一緒に捨てる。回すのは主ウィンドウ）
@@ -129,11 +131,12 @@ final class AppEnvironment {
         return environment
     }
 
-    /// 保存した登録があれば、それに向けて部品を作る
+    /// 保存した登録があれば、選んでいる台に向けて部品を作る
     private func restore() {
         do {
-            if let saved = try store.load() {
-                try connect(registration: saved.registration, device: saved.device)
+            registrations = try store.load()
+            if let selected = registrations.selected {
+                try connect(registration: selected.registration, device: selected.device)
                 // 保存したアドレスに届くかを確かめ、届かなければ探し直す
                 checkConnection(.launch)
             }
@@ -142,9 +145,22 @@ final class AppEnvironment {
         }
     }
 
+    /// 保存した登録の一覧を読み直す（読めなければ前の一覧のまま）
+    func reloadRegistrations() {
+        do {
+            registrations = try store.load()
+        } catch {
+            restoreError = ErrorText.present(error)
+        }
+    }
+
+    /// いま部品を作っている台の鍵（登録が無ければ nil）
+    var currentNasneKey: String? { services?.registration.storageKey }
+
     /// 登録した nasne に向けて部品を作る（control URL は記述から解く）
     func connect(registration: RegisteredNasne, device: NasneDevice) throws {
         let services = try NasneServices.live(registration: registration, device: device, client: client)
+        let key = registration.storageKey
         // 主ウィンドウは services が立った時点で作られ、そのときの library を録画のモデルに渡すので、先に開く
         library = Self.makeLibrary()
         let viewing = ViewingRecorder(udn: registration.udn, library: library, resumePositions: services.resumePositions)
@@ -157,8 +173,9 @@ final class AppEnvironment {
         self.channels = channels
         self.services = services
         restoreError = nil
-        programGuide = Self.makeProgramGuide(services: services, link: liveStatus)
-        live = LiveModel(channels: channels, catalog: services.liveCatalog, programGuide: programGuide?.store)
+        programGuide = Self.makeProgramGuide(services: services, link: liveStatus, nasneKey: key)
+        LiveSettingsKey.moveLegacyLastStation(to: key)
+        live = LiveModel(channels: channels, catalog: services.liveCatalog, programGuide: programGuide?.store, nasneKey: key)
         // 局のロゴ：保存したものをすぐ出す。nasne からの読み直しと番組表の取り直しは、届くと分かったときに主ウィンドウが頼む
         // （起動したとき・登録したとき・つながり直したとき。版数表が前と同じなら EPGGet は送らない）
         let logos = ChannelLogoModel(source: services.programGuide, store: programGuide?.store, link: liveStatus)
@@ -166,10 +183,12 @@ final class AppEnvironment {
         channelLogos = logos
     }
 
-    /// 番組表を開いて、取り直しのモデルを作る。開けなければ nil（番組表のほかは使えるようにする）
-    private static func makeProgramGuide(services: NasneServices, link: LiveStatusMonitor) -> ProgramGuideModel? {
+    /// 台の番組表を開いて、取り直しのモデルを作る。開けなければ nil（番組表のほかは使えるようにする）。
+    /// 1.6 までの番組表（1 つのファイル）があれば、先に台のフォルダーへ移す
+    private static func makeProgramGuide(services: NasneServices, link: LiveStatusMonitor, nasneKey: String) -> ProgramGuideModel? {
         do {
-            let url = try ProgramGuideFiles.storeURL()
+            let url = try ProgramGuideFiles.storeURL(for: nasneKey)
+            ProgramGuideFiles.moveLegacy(from: try ProgramGuideFiles.legacyStoreURL(), to: url)
             return ProgramGuideModel(service: services.programGuide, store: try EPGStore(fileURL: url),
                                      versions: FileProgramGuideVersionStore(fileURL: ProgramGuideFiles.versionURL(storeURL: url)),
                                      link: link)
@@ -191,28 +210,88 @@ final class AppEnvironment {
         }
     }
 
-    /// 登録を外す（保存したファイルと Keychain の MAC アドレス、この Mac に置いた番組表・録画一覧・視聴の記録も消す）。
-    /// 番組表と録画一覧・視聴の記録は、書き込みが終わって閉じてから消す（開いたまま消すと、書きかけの記録のファイルが残りうる）
-    func unregister() async throws {
-        playback.stop()
-        nowPlaying = nil
-        currentTitle = nil
-        liveQualityOverride = nil
-        live = nil
-        channelLogos = nil
-        UserDefaults.standard.removeObject(forKey: LiveSettingsKey.lastStation)
+    // MARK: - 台の切り替え・追加・登録を外す
+
+    /// 部品を作り直す（台のアドレスが変わった・台を切り替えた・台を足した。作り直しの道はこれ 1 つ）。
+    /// 再生は止める。主ウインドウは RootView の id（台の UDN とアドレス）が変わって開き直す
+    func rebuildConnection(registration: RegisteredNasne, device: NasneDevice) async throws {
+        await tearDownConnection()
+        try connect(registration: registration, device: device)
+    }
+
+    /// 今の台の部品を閉じる（再生を止め、視聴の記録と番組表の書き込みを済ませ、録画一覧のキャッシュを閉じる）
+    private func tearDownConnection() async {
+        endViewing()
+        // ライブの局の一覧・番組表・録画一覧のキャッシュ・視聴の記録は connect が作り直す
         await viewing?.flush()
-        viewing = nil
-        await programGuide?.finish()
-        programGuide = nil
+        // 届かずに頼み直している番組表の取り直しは待たずに取り消す
+        await programGuide?.cancelAndFinish()
         await library?.close()
-        library = nil
-        try store.delete()
-        services = nil
-        liveStatus = nil
-        channels = nil
-        try ProgramGuideFiles.delete(storeURL: try ProgramGuideFiles.storeURL())
-        try LibraryStore.delete(fileURL: try LibraryStore.defaultFileURL())
+    }
+
+    /// 見る nasne を切り替える（設定の「nasne」の節。再生は止める。2026-11-25 に決めた）
+    func selectNasne(key: String) async {
+        guard key != currentNasneKey else { return }
+        do {
+            try store.select(key: key)
+            registrations = try store.load()
+            guard let selected = registrations.selected, selected.key == key else { return }
+            try await rebuildConnection(registration: selected.registration, device: selected.device)
+            connection = .connected
+            checkConnection(.launch)
+        } catch {
+            restoreError = ErrorText.present(error)
+        }
+    }
+
+    /// 登録を足した（登録の画面から）。足した台へ切り替える（2026-11-25 に決めた）
+    private func addedNasne(_ registration: RegisteredNasne, device: NasneDevice) async {
+        do {
+            try store.select(key: registration.storageKey)
+            registrations = try store.load()
+            if services == nil {
+                try connect(registration: registration, device: device)
+            } else {
+                try await rebuildConnection(registration: registration, device: device)
+            }
+            connection = .connected
+        } catch {
+            restoreError = ErrorText.present(error)
+        }
+    }
+
+    /// 1 台の登録を外す（保存した登録と Keychain の MAC アドレス、その台の番組表・録画一覧・視聴の記録・前に見た局も消す）。
+    /// 見ている台を外したら、残っている台へ切り替える（無ければ登録の画面）。
+    /// 番組表と録画一覧・視聴の記録は、書き込みが終わって閉じてから消す（開いたまま消すと、書きかけの記録のファイルが残りうる）
+    func unregister(key: String) async throws {
+        guard let entry = registrations.entries.first(where: { $0.key == key }) else { return }
+        let isCurrent = key == currentNasneKey
+        if isCurrent {
+            liveQualityOverride = nil
+            await tearDownConnection()
+            live = nil
+            channelLogos = nil
+            viewing = nil
+            programGuide = nil
+            services = nil
+            liveStatus = nil
+            channels = nil
+        }
+        try store.delete(key: key)
+        UserDefaults.standard.removeObject(forKey: LiveSettingsKey.lastStation(nasne: key))
+        try ProgramGuideFiles.delete(storeURL: try ProgramGuideFiles.storeURL(for: key))
+        registrations = try store.load()
+        if let next = registrations.selected {
+            if isCurrent {
+                try connect(registration: next.registration, device: next.device)
+                checkConnection(.launch)
+            }
+            // 録画一覧のキャッシュは台をまたいで 1 つのファイル。外した台の行だけ消す
+            try await library?.delete(udn: entry.registration.udn)
+        } else {
+            library = nil
+            try LibraryStore.delete(fileURL: try LibraryStore.defaultFileURL())
+        }
     }
 
     /// 録画を再生する。前の録画の位置を記録してから、これから見る録画を視聴の記録に知らせて始める
@@ -434,13 +513,12 @@ final class AppEnvironment {
         await viewing?.flush()
     }
 
-    /// 発見・登録の流れのモデル（登録が通ったら、この組み立てに向けて部品を作る）
-    func makeSetupModel() -> DeviceSetupModel {
+    /// 発見・登録の流れのモデル（登録が通ったら、足した台へ切り替えて部品を作り、`added` を呼ぶ）
+    func makeSetupModel(added: (@MainActor () -> Void)? = nil) -> DeviceSetupModel {
         DeviceSetupModel(setup: setup, store: store) { [weak self] registration, device in
-            do {
-                try self?.connect(registration: registration, device: device)
-            } catch {
-                self?.restoreError = ErrorText.present(error)
+            Task {
+                await self?.addedNasne(registration, device: device)
+                added?()
             }
         }
     }

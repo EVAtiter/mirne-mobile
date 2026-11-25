@@ -27,10 +27,8 @@ struct IPadRootView: View {
         VStack(spacing: 0) {
             NavigationStack {
                 if let services = environment.services, let channels = environment.channels, let liveStatus = environment.liveStatus {
-                    // アドレスが変わって作り直したら、主画面も開き直す（画面のモデルが前の部品を持っているため）
-                    MainView(services: services, liveStatus: liveStatus, channels: channels, logos: environment.channelLogos, library: environment.library, viewing: environment.viewing,
-                             openViewer: { showsViewer = true })
-                        .id(MainViewIdentity(udn: services.registration.udn, host: services.registration.host))
+                    MainScreen(services: services, liveStatus: liveStatus, channels: channels,
+                               openViewer: { showsViewer = true })
                         .navigationBarTitleDisplayMode(.inline)
                 } else {
                     SetupView(model: environment.makeSetupModel())

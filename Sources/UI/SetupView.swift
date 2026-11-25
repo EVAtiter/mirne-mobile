@@ -50,6 +50,7 @@ struct SetupView: View {
                 HStack {
                     TextField("nasne の IP アドレス、またはデバイス記述の URL", text: $model.manualAddress)
                         .textFieldStyle(.roundedBorder)
+                        .addressEntryKeyboard()
                         .onSubmit { Task { await model.registerManualAddress() } }
                     Button("登録") { Task { await model.registerManualAddress() } }
                         .disabled(model.isBusy || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)

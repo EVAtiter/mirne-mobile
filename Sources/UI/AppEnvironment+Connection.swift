@@ -95,13 +95,8 @@ extension AppEnvironment {
     /// 新しいアドレスの登録を保存し、部品を作り直す（再生は止める。主ウインドウは RootView の id が変わって開き直す）
     private func moveConnection(to registration: RegisteredNasne, device: NasneDevice) async throws {
         try store.save(registration, device: device)
-        endViewing()
-        // ライブの局の一覧・番組表・録画一覧のキャッシュ・視聴の記録は connect が作り直す
-        await viewing?.flush()
-        // 古いアドレスへの番組表の取り直し（届かずに頼み直している）は待たずに取り消す
-        await programGuide?.cancelAndFinish()
-        await library?.close()
-        try connect(registration: registration, device: device)
+        reloadRegistrations()
+        try await rebuildConnection(registration: registration, device: device)
     }
 }
 

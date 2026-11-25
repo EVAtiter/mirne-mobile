@@ -56,19 +56,66 @@ public final class MemoryProgramGuideVersionStore: ProgramGuideVersionStore, @un
 
 /// この Mac に置く番組表のファイル（登録を外したら全部消す）
 public enum ProgramGuideFiles {
-    /// 番組表（`~/Library/Application Support/mirne-mobile/epg.sqlite`）
-    public static func storeURL() throws -> URL { try EPGStore.defaultFileURL() }
+    /// 台ごとのフォルダーを入れるフォルダーの名前
+    static let nasneFolderName = "nasne"
+    /// 番組表のファイルの名前
+    static let storeFileName = "epg.sqlite"
+
+    /// 1.6 までの番組表（`~/Library/Application Support/mirne-mobile/epg.sqlite`。登録は 1 台だけだった）
+    public static func legacyStoreURL() throws -> URL { try EPGStore.defaultFileURL() }
+
+    /// 台ごとの番組表（`~/Library/Application Support/mirne-mobile/nasne/<台の鍵>/epg.sqlite`。局のロゴも同じファイル）。
+    /// 番組の版数表と局のロゴは nasne ごとなので、同じ地域の 2 台でも分けて持つ（2026-11-25 に決めた）
+    public static func storeURL(for key: String) throws -> URL {
+        try legacyStoreURL().deletingLastPathComponent()
+            .appendingPathComponent(nasneFolderName, isDirectory: true)
+            .appendingPathComponent(folderName(for: key), isDirectory: true)
+            .appendingPathComponent(storeFileName)
+    }
+
+    /// 台の鍵（UDN）をフォルダーの名前にする（英数と `-` `_` `.` のほかは `_` にする）
+    static func folderName(for key: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let name = String(String.UnicodeScalarView(key.unicodeScalars.map { allowed.contains($0) && $0.isASCII ? $0 : "_" }))
+        return name.isEmpty || name.allSatisfy({ $0 == "." }) ? "_" : name
+    }
 
     /// 版数表の控え（番組表の隣）
     public static func versionURL(storeURL: URL) -> URL {
         storeURL.deletingLastPathComponent().appendingPathComponent("epg.version")
     }
 
-    /// 番組表と、その隣のファイル（SQLite が書き込みの途中に作るもの）と、版数表の控えを消す。無いものは飛ばす
+    /// 本体・隣のファイル・版数表の控えのパス
+    static func paths(storeURL: URL) -> [String] {
+        SQLiteFiles.paths(of: storeURL) + [versionURL(storeURL: storeURL).path]
+    }
+
+    /// 1.6 までの番組表があり、台の番組表がまだ無ければ、台のフォルダーへ移す（取り直さずに済む）。
+    /// 移せないものがあれば残りを移さずにやめる（台の番組表は空から取り直す）
+    public static func moveLegacy(from legacyURL: URL, to storeURL: URL) {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: legacyURL.path), !manager.fileExists(atPath: storeURL.path) else { return }
+        do {
+            try manager.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            for (from, to) in zip(paths(storeURL: legacyURL), paths(storeURL: storeURL)) where manager.fileExists(atPath: from) {
+                try manager.moveItem(atPath: from, toPath: to)
+            }
+        } catch {
+            Logger(subsystem: AppLog.subsystem, category: "epg")
+                .error("前の版の番組表を移せない: \(NasneDiagnostics.summary(error), privacy: .public)")
+        }
+    }
+
+    /// 番組表と、その隣のファイル（SQLite が書き込みの途中に作るもの）と、版数表の控えを消す。無いものは飛ばす。
+    /// 台のフォルダーが空になれば、フォルダーも消す
     public static func delete(storeURL: URL) throws {
-        let paths = SQLiteFiles.paths(of: storeURL) + [versionURL(storeURL: storeURL).path]
-        for path in paths where FileManager.default.fileExists(atPath: path) {
+        for path in paths(storeURL: storeURL) where FileManager.default.fileExists(atPath: path) {
             try FileManager.default.removeItem(atPath: path)
+        }
+        let folder = storeURL.deletingLastPathComponent()
+        if folder.deletingLastPathComponent().lastPathComponent == nasneFolderName,
+           (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+            try FileManager.default.removeItem(at: folder)
         }
     }
 }

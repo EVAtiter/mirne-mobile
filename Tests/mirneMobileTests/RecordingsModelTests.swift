@@ -293,6 +293,20 @@ struct LibraryStoreTests {
         #expect(await reopened.titleList(udn: "uuid:a") == list)
     }
 
+    @Test("1 台の登録を外すと、その台の一覧だけを消し、ほかの台の一覧は残る")
+    func deletesOneDevice() async throws {
+        let url = temporaryLibraryURL()
+        defer { try? LibraryStore.delete(fileURL: url) }
+        let titles = try await fixtureTitles()
+        let list = SavedTitleList(titles: titles, fetchedAt: Date(timeIntervalSince1970: 1_800_000_000), counts: nil)
+        let store = try LibraryStore(fileURL: url)
+        await store.saveTitleList(list, udn: "uuid:a")
+        await store.saveTitleList(list, udn: "uuid:b")
+        try await store.delete(udn: "uuid:a")
+        #expect(await store.titleList(udn: "uuid:a") == nil)
+        #expect(await store.titleList(udn: "uuid:b") == list)
+    }
+
     @Test("差し替えると消えた録画はキャッシュからも消える。nasne（UDN）ごとに分かれる")
     func replacesPerDevice() async throws {
         let url = temporaryLibraryURL()

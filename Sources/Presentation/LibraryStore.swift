@@ -46,7 +46,7 @@ public final class LibraryStore: @unchecked Sendable {
         return support.appendingPathComponent("mirne-mobile", isDirectory: true).appendingPathComponent("library.sqlite")
     }
 
-    /// 保存先と、その隣のファイルを消す（登録を外したとき）。無いものは飛ばす。開いている `LibraryStore` は先に `close()` する
+    /// 保存先と、その隣のファイルを消す（最後の 1 台の登録を外したとき）。無いものは飛ばす。開いている `LibraryStore` は先に `close()` する
     public static func delete(fileURL: URL) throws {
         for path in SQLiteFiles.paths(of: fileURL) where FileManager.default.fileExists(atPath: path) {
             try FileManager.default.removeItem(atPath: path)
@@ -99,6 +99,25 @@ public final class LibraryStore: @unchecked Sendable {
                     try writeTitleList(list, udn: udn)
                 } catch {
                     Self.logger.error("録画一覧を保存できない: \(Self.summary(error), privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// 1 台の nasne の一覧・視聴の記録を全部消す（その台の登録を外したとき。ほかの台の行は残す）。閉じた後は何もしない
+    public func delete(udn: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            queue.async { [self] in
+                guard database.isOpen else { return continuation.resume() }
+                do {
+                    try database.transaction(begin: "BEGIN IMMEDIATE") {
+                        for table in ["titles", "title_lists", "viewing"] {
+                            try database.execute("DELETE FROM \(table) WHERE udn = ?", [.text(udn)])
+                        }
+                    }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
         }
