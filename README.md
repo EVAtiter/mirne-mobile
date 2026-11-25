@@ -43,7 +43,8 @@ The author cannot compensate for the content of recordings, and cannot repair, r
 - **Info (情報)**: shows the nasne itself, free HDD space, programs being recorded, notices, and schedules that failed to record
 - **Media (メディア)**: watch and listen to videos (MP4), music (MP3, AAC), and photos (JPEG, PNG) placed in the nasne's shared folder. First choose Video, Music, or Photo (ビデオ・ミュージック・フォト), then browse the folders. Videos and music play in the same playback window as recordings (they never play at the same time as a recording or live broadcast; on the Mac, opening one switches the window over), and photos open large and can be stepped through. No credentials are needed. Put files in the shared folder with Finder or the like
 - **Switching screens**: switch between Program guide, Schedules, Recordings, Media, and Info with the switcher in the center of the bar at the top of each screen on the Mac, and with the tabs at the bottom of the screen on the iPhone and iPad. Live (ライブ) and Settings (設定) are at the right end of the bar at the top of each screen. Notices such as loading and errors float at the bottom center of the window on the Mac, and just above the tabs on the iPhone and iPad
-- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. When the nasne cannot be reached, the app shows only "nasne not found" (nasne が見つかりません), keeps the lists it read before, and disables the actions that talk to the nasne (Info gets a red mark, and Search Again (探し直す) looks for it again). Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. nasne HOME, the nasne's own settings screen, opens in your browser from the nasne section of Settings (ブラウザで開く). The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
+- **Multiple nasne units**: register as many nasne units as you like and switch the one you are viewing from the list in the nasne section of Settings. The program guide, schedules, recordings, media, and info show the selected nasne. Units with the same name are told apart by their maker (SIE or Buffalo) and a number
+- **Also**: looks for the nasne again by itself when its address changes or when you switch networks. When the nasne cannot be reached, the app shows only "nasne not found" (nasne が見つかりません), keeps the lists it read before, and disables the actions that talk to the nasne (Info gets a red mark, and Search Again (探し直す) looks for it again). Remembers window positions and sizes. Keeps the display awake while playing, and stops playback when the Mac goes to sleep. nasne HOME, the nasne's own settings screen, opens in your browser from the nasne section of Settings (ブラウザで開く). If something does not work, Diagnostics (診断) in Settings writes the app's log to a text file (it leaves out the nasne's address and name, station and program names, and credentials). The version, copyright, and licenses of the components used are in About This App (このアプリについて) at the end of Settings
 - **iPhone and iPad**: the same program guide, schedules, recordings, info, playback, and live viewing. Tap a recording to select it and show its card, and double-tap it to play it. Tap a schedule to open a sheet with its details and buttons to change or delete it. Playback covers the whole screen; tap to show the controls, and double-tap the left or right half to go 10 seconds back or forward (recordings). Playback stops when the app goes to the background and resumes from the same position when you come back
   - On a narrow screen such as an iPhone in portrait, the card of the selected recording opens as a sheet from the bottom. Bar buttons become symbols and the program guide shows two stations at a time. No features are left out
 
@@ -79,7 +80,8 @@ The same Release also has the source code of FFmpeg that the iPhone and iPad ver
 
 1. **Register your nasne**: on first launch the app looks for a nasne on the same network. If none is
    found, scan the network or enter the nasne's IP address (or its device description URL). If this
-   Mac is not allowed by the nasne, allow it in the media server settings of nasne HOME
+   Mac is not allowed by the nasne, allow it in the media server settings of nasne HOME. Register a
+   second or later unit from Add nasne… (nasne を追加…) in the nasne section of Settings
 2. **Import credentials** (only for watching recordings and live broadcasts): in Settings (設定) →
    Credentials (資格情報（DTCP-IP）), choose the two files of a certificate and private key obtained from
    your own device (a `credentials.env` file also works). The program guide, schedules, and recording
@@ -142,7 +144,8 @@ each user to judge. This repository does not tell you where to get one or how to
 The iPhone and iPad version was tested on an iPhone 17 Pro with iOS 27 and an iPad Air with iPadOS 27.
 
 Tested with a Buffalo nasne (system software 4.50). Support for the Sony Interactive Entertainment
-nasne is based on the measurements of torne mobile HomeBrew edition (system software 2.60).
+nasne is based on the measurements of torne mobile HomeBrew edition (system software 2.60), and recording
+playback, live viewing, and switching between units were tested on an iPad with iPadOS 26.
 
 ## Building
 
