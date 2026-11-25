@@ -410,6 +410,19 @@ private final class FakeKeySession: AKEKeySession {
         #expect(first.closed)
     }
 
+    /// 同じ録画の中で飛ぶとき、前の受信を止めて接続を閉じた後も、受け取った鍵は認証し直さずに渡す
+    @Test func aKnownLabelIsServedAfterTheSessionIsClosed() async throws {
+        let first = FakeKeySession(keys: [115: key115], ended: true)
+        let reauthentications = Mutex(0)
+        let source = DTCPKeySource(session: first, diagnostics: .none) {
+            reauthentications.withLock { $0 += 1 }
+            return FakeKeySession(keys: [:])
+        }
+        await source.currentSession.close()
+        #expect(try await source.key(for: 115) == key115)
+        #expect(reauthentications.withLock { $0 } == 0)
+    }
+
     @Test func aLabelMismatchAfterReauthenticationIsAnError() async throws {
         let first = FakeKeySession(keys: [115: key115], ended: true)
         let second = FakeKeySession(keys: [117: key116])

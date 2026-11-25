@@ -38,6 +38,8 @@ public final class PlaybackController: PlaybackService {
     private let diagnostics: DTCPDiagnostics
 
     @ObservationIgnored private var session: PlaybackSession?
+    /// 同じ録画の張り直しで使い回す認証（HEAD の結果と交換鍵。新しい録画・ライブ・停止・スリープ・失敗で捨てる）
+    @ObservationIgnored private var authentication: PlaybackAuthentication?
     @ObservationIgnored private var monitor: Task<Void, Never>?
     /// 始める・止めるを順に行う（受信は画面のスレッドの外で動くので、止め終わるのを待ってから再生系を空にする）
     @ObservationIgnored private var operation: Task<Void, Never>?
@@ -142,6 +144,7 @@ public final class PlaybackController: PlaybackService {
         reconnectPosition = nil
         pausedAt = nil
         hasStarted = false
+        authentication = nil
         state = .starting(.credentials)
     }
 
@@ -294,6 +297,7 @@ public final class PlaybackController: PlaybackService {
         generation += 1
         resource = nil
         reconnectPosition = nil
+        authentication = nil
         state = .idle
         enqueue { [weak self] in await self?.stopSession() }
     }
@@ -314,6 +318,7 @@ public final class PlaybackController: PlaybackService {
         pauseWhenStarted = false
         pausedAt = nil
         reconnectPosition = position
+        authentication = nil   // スリープの後は nasne の側が変わっているかもしれないので、認証し直す
         state = .paused
         recordCheckpoint(.left)
         log("スリープの前に受信と接続を閉じる（\(Self.seconds(position))。再開で張り直す）")
@@ -405,8 +410,11 @@ public final class PlaybackController: PlaybackService {
         if let preferredAudio { engine.selectAudio(preferredAudio) }
         // ライブは時計を止めたまま始め、先読みが溜まってから動かす（`liveStartAhead`）。再生系を空にすると一時停止の印も戻るので、その後に立てる
         if kind == .live { engine.pause() }
-        let session = PlaybackSession(url: url, startSeconds: seconds, credentialStore: credentialStore, client: client,
-                                      engine: engine, diagnostics: diagnostics) { [weak self] event in
+        // 同じ録画の張り直しなら、前の受信の HEAD と交換鍵を使い回す（違う録画・画質・ライブなら捨てる）
+        let reusing = PlaybackAuthentication.reusable(authentication, for: url, kind: kind)
+        if reusing == nil { authentication = nil }
+        let session = PlaybackSession(url: url, startSeconds: seconds, reusing: reusing, credentialStore: credentialStore,
+                                      client: client, engine: engine, diagnostics: diagnostics) { [weak self] event in
             await self?.handle(event)
         }
         self.session = session
@@ -447,6 +455,7 @@ public final class PlaybackController: PlaybackService {
     private func fail(_ error: any Error, _ stage: PlaybackStage) {
         let error = kind == .live ? LivePlaybackErrors.translate(error) : error
         log("失敗（\(stage.rawValue) の段・\(Self.summary(error))）")
+        authentication = nil
         let presented = ErrorText.present(error)
         enqueue { [weak self] in
             await self?.stopSession()
@@ -460,6 +469,11 @@ public final class PlaybackController: PlaybackService {
         case .stage(let stage):
             if state.isStarting { state = .starting(stage) }
             log("段：\(stage.rawValue)")
+        case .authenticated(let authentication):
+            // 止めた後に届いた古い知らせは覚えない（いまの録画の URL と同じときだけ）
+            if let resource, URL(string: resource.url) == authentication.url {
+                self.authentication = authentication
+            }
         case .seekStart(let seconds):
             // nasne は時間指定を少し後ろに合わせて返す。返った位置を基準にする
             baseSeconds = seconds

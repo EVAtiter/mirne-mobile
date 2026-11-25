@@ -4,9 +4,10 @@ import ImageIO
 // mirne mobile の計測用のコマンド（mirne の mirne-probe に倣う）。配布物には含めない。
 //
 //   mirne-mobile-probe discover [--scan]
-//   mirne-mobile-probe info      --host <nasne>
+//   mirne-mobile-probe info      --host <nasne> [--recng]   （--recng：録画の失敗の項目の名前と値）
 //   mirne-mobile-probe titles    --host <nasne>
-//   mirne-mobile-probe schedules --host <nasne>
+//   mirne-mobile-probe schedules --host <nasne> [--fields]   （--fields：予約の項目の名前と値。番組名は文字数だけ）
+//   mirne-mobile-probe hdd       --host <nasne>   （HDD の一覧・詳細と録画先ごとの状態〔X_GetMediaInfo〕の数値）
 //   mirne-mobile-probe epg       --host <nasne> [--store <SQLite のパス>]
 //   mirne-mobile-probe credentials import --cert <ファイル> --key <ファイル>   （ペアを Keychain に取り込む）
 //   mirne-mobile-probe credentials import --env <pydtcpip の credentials.env>   （同じペアを 1 つのファイルから）
@@ -38,7 +39,8 @@ let subcommands: [(name: String, summary: String)] = [
     ("discover", "SSDP で nasne を探す（--scan を付けたときだけ自分の /24 も走査する）"),
     ("info", "登録の確認（PINVerify）と本体の情報"),
     ("titles", "録画の一覧（xsrs と DIDL の結合）"),
-    ("schedules", "予約の一覧"),
+    ("schedules", "予約の一覧（--fields で項目の名前と値も出す）"),
+    ("hdd", "HDD の一覧・詳細（バイト数）と、録画先ごとの状態（X_GetMediaInfo）を読む（外付けの容量の試験）"),
     ("epg", "番組表を取って EPGStore に入れる"),
     ("credentials", "資格情報ペアを Keychain に取り込む・要約を見る・消す（import / show / delete）"),
     ("stream", "録画を HEAD → AKE → GET → PCP の復号で受け、TS の中身を数える（ディスクに書かない）"),
@@ -192,6 +194,7 @@ func runInfo() async throws {
     say("録画の失敗: \(try await service.recNgList().count) 件")
     let counts = try await service.titleCounts()
     say("録画の件数: \(counts.count) 件（上限 \(counts.max) 件）")
+    if flag("--recng") { try await printRecNgFields(transport: transport) }
 }
 
 func runTitles() async throws {
@@ -366,6 +369,7 @@ func runSchedules() async throws {
     var names: [String: Int] = [:]
     for item in raw { for key in item.fields.keys { names[key, default: 0] += 1 } }
     say("項目名: \(names.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: "・"))")
+    if flag("--fields") { printScheduleFields(raw) }
 }
 
 func runEPG() async throws {
@@ -481,6 +485,7 @@ do {
     case "info": try await runInfo()
     case "titles": try await runTitles()
     case "schedules": try await runSchedules()
+    case "hdd": try await HDDCommand.run()
     case "epg": try await runEPG()
     case "credentials": try CredentialsCommand.run(CommandLine.arguments.dropFirst(2).first)
     case "stream": try await StreamCommand.run()

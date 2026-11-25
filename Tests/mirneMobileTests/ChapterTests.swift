@@ -75,3 +75,26 @@ struct ChapterNavigationTests {
         #expect(ChapterNavigation.fractions(points, duration: nil).isEmpty)
     }
 }
+
+@Suite("録画先ごとの HDD の状態")
+struct MediaInfoTests {
+    @Test("X_PvrControl の X_GetMediaInfo に録画先の値を送り、出る値を読んだまま返す")
+    func requests() async throws {
+        let http = MockHTTP()
+        let body = """
+            <?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>\
+            <u:X_GetMediaInfoResponse xmlns:u="urn:schemas-s-bras-org:service:X_PvrControl:1">\
+            <name></name><mount>1</mount><remain>1900</remain><total>1950</total>\
+            </u:X_GetMediaInfoResponse></s:Body></s:Envelope>
+            """
+        http.reply("/X_PvrControl", method: "POST", body: Data(body.utf8))
+        let catalog = RecordingCatalogService(soap: SOAPTransport(client: http), device: NasneDevice.direct(host: NasneFixture.host))
+        let values = try await catalog.mediaInfo(destination: .externalHDD)
+        #expect(values["mount"] == "1")
+        #expect(values["remain"] == "1900")
+        #expect(values["total"] == "1950")
+        let sent = String(decoding: try #require(http.sentRequests.first?.httpBody), as: UTF8.self)
+        #expect(sent.contains("X_GetMediaInfo"))
+        #expect(sent.contains("<recordDestinationID>USBHDD</recordDestinationID>"))
+    }
+}

@@ -255,6 +255,8 @@ public struct SOAPArgumentNames: Sendable {
     public let recordScheduleID: String
     /// 録画の ID（`X_DeleteTitle`）
     public let titleID: String
+    /// 録画先（`X_GetMediaInfo` に入る。値は xsrs の録画先の値〔内蔵 `HDD`・外付け `USBHDD`〕。torne mobile HB §89.3 の SIE 製の実測）
+    public let recordDestinationID: String
     // 一覧（`X_GetRecordScheduleList`・`X_GetTitleList`・`Browse`）
     public let objectID: String
     public let browseFlag: String
@@ -300,6 +302,9 @@ public struct SOAPTable: Sendable {
     // ── X_PvrControl ──
     /// 録画のチャプター（入る引数は TitleID〔一覧の ID〕。2026-11-22 に Buffalo 製で確かめた）
     public var getTitleInfo: SOAPAction { SOAPAction(service: pvrControl, name: "X_GetTitleInfo") }
+    /// 録画先ごとの HDD の状態（入る引数は recordDestinationID・出る値は name・mount・remain・total。外付けが無いときは
+    /// mount 0 の空の記録で、Fault にならない。ほかの値は Fault。torne mobile HB §89.3・§89.8 の SIE 製の実測。外付けの容量の試験で使う）
+    public var getMediaInfo: SOAPAction { SOAPAction(service: pvrControl, name: "X_GetMediaInfo") }
 
     // ── ContentDirectory ──
     public var browse: SOAPAction { SOAPAction(service: contentDirectory, name: "Browse") }
@@ -323,6 +328,7 @@ public struct SOAPTable: Sendable {
                                        defaultPort: 58888, fallbackControlPaths: ["/MediaServer_ConnectionManager/control"]),
         arguments: SOAPArgumentNames(
             elements: "Elements", recordScheduleID: "RecordScheduleID", titleID: "TitleID",
+            recordDestinationID: "recordDestinationID",
             objectID: "ObjectID", browseFlag: "BrowseFlag", searchCriteria: "SearchCriteria", filter: "Filter",
             startingIndex: "StartingIndex", requestedCount: "RequestedCount", sortCriteria: "SortCriteria",
             browseDirectChildren: "BrowseDirectChildren", browseMetadata: "BrowseMetadata", allProperties: "*", requestAll: 0,

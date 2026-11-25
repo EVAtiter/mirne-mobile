@@ -158,6 +158,7 @@ SHA-256 を照合して、MPEG-2 の映像の復号器を動的なフレーム�
 - [mirne](https://github.com/EVAtiter/mirne)（Apache-2.0）：再生・番組表・字幕の部品を受け継いでいます
 - [coax](https://github.com/Till0196/coax)（Till0196・Apache-2.0）：ARIB の文字と字幕の読み方は、mirne を通してこの実装に由来します
 - [FFmpeg](https://ffmpeg.org/)（LGPL-2.1）：iPhone・iPad 版は MPEG-2 の映像（DR の録画とライブ）をこれで復号します
+- [yaaaaaby](https://x.com/yaaaaaby)：試し版で、ソニー・インタラクティブエンタテインメント製とバッファロー製の nasne が混在する環境での複数台の切り替え・再生・ライブを確認し、チャプタースキップ時の待ちを診断のファイルで知らせていただきました
 
 詳しくは [NOTICE](NOTICE) を参照してください。
 

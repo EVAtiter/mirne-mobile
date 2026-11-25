@@ -766,6 +766,11 @@ public struct RecordingCatalogService: Sendable {
         return TitleChapters.usablePoints(result: result, durationSeconds: durationSeconds)
     }
 
+    /// 録画先ごとの HDD の状態（`X_GetMediaInfo`。出る値を読んだまま返す。読み取りだけ）
+    public func mediaInfo(destination: RecordDestination) async throws -> [String: String] {
+        try await call(actions.getMediaInfo, [(names.recordDestinationID, profile.xsrs.destinationID(destination))]).values
+    }
+
     /// ContentDirectory の Browse（直下の子の item。1 回に 50 件までなので頁を送る）
     public func browse(_ objectID: String) async throws -> [DIDLItem] {
         try await browseEntries(objectID).compactMap {

@@ -172,6 +172,7 @@ frameworks (it takes a few minutes). `scripts/build-ipa.sh` makes the unsigned I
 - [mirne](https://github.com/EVAtiter/mirne) (Apache-2.0): the playback, program guide, and caption parts come from it
 - [coax](https://github.com/Till0196/coax) (Till0196, Apache-2.0): the ARIB text and caption decoding derives from it, through mirne
 - [FFmpeg](https://ffmpeg.org/) (LGPL-2.1): the iPhone and iPad version decodes MPEG-2 video (DR recordings and live broadcasts) with it
+- [yaaaaaby](https://x.com/yaaaaaby): tested the beta in a mixed environment of Sony Interactive Entertainment and Buffalo nasne units, checking switching between units, playback, and live viewing, and reported the wait on chapter skips with diagnostic files
 
 See [NOTICE](NOTICE) for details.
 

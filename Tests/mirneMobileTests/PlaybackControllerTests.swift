@@ -247,6 +247,22 @@ struct PlaybackControllerTests {
     }
 }
 
+@Suite("同じ録画の張り直しでの認証の使い回し")
+struct PlaybackAuthenticationPolicyTests {
+    private let recording = URL(string: "http://nasne.invalid:64220/a")!
+    private let other = URL(string: "http://nasne.invalid:64220/b")!
+
+    /// 同じ録画の張り直し（シーク・音声の切り替え）だけ使い回す
+    @Test func reusesOnlyForTheSameRecording() {
+        #expect(PlaybackAuthenticationPolicy.canReuse(cachedURL: recording, url: recording, kind: .recording))
+        // 画質を替えると URL が変わるので認証し直す
+        #expect(!PlaybackAuthenticationPolicy.canReuse(cachedURL: recording, url: other, kind: .recording))
+        // ライブは使い回さない
+        #expect(!PlaybackAuthenticationPolicy.canReuse(cachedURL: recording, url: recording, kind: .live))
+        #expect(!PlaybackAuthenticationPolicy.canReuse(cachedURL: nil, url: recording, kind: .recording))
+    }
+}
+
 @Suite("配信の HEAD の HTTP 511 の頼み直し")
 struct InUseRetryPolicyTests {
     /// 決めた順に、511・ほかの誤り・成功を返す偽の HEAD
