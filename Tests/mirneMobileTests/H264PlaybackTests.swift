@@ -135,6 +135,34 @@ struct H264ParserTests {
         #expect(sequence.progressiveSequence)
     }
 
+    @Test("720×480 は SAR 40:33（BT.601 の 16:9）・SAR なし・SAR 1:1 でも 16:9、10:11 は 4:3", arguments: [
+        ((40, 33) as (Int, Int)?, H264FrameDescription.aspect16x9),
+        (nil, H264FrameDescription.aspect16x9),
+        ((1, 1), H264FrameDescription.aspect16x9),
+        ((10, 11), H264FrameDescription.aspect4x3),
+        ((32, 27), H264FrameDescription.aspect16x9),
+    ])
+    func standardDefinitionAspect(sar: (Int, Int)?, expected: UInt8) {
+        let parameters = ElementaryStreamFormat.H264SequenceParameters(
+            size: .init(width: 720, height: 480), frameMBsOnly: true,
+            sampleAspectRatio: sar.map { (width: $0.0, height: $0.1) }, frameRate: 30000.0 / 1001)
+        #expect(H264FrameDescription.aspectCode(parameters) == expected)
+    }
+
+    @Test("720×480 以外は SAR から決める（1920×1080 の 1:1 は 16:9・640×480 の 1:1 は 4:3・1280×1024 の 1:1 は正方形）")
+    func otherSizesAspect() {
+        func code(_ width: Int, _ height: Int, _ sar: (Int, Int)?) -> UInt8 {
+            H264FrameDescription.aspectCode(ElementaryStreamFormat.H264SequenceParameters(
+                size: .init(width: width, height: height), frameMBsOnly: true,
+                sampleAspectRatio: sar.map { (width: $0.0, height: $0.1) }, frameRate: nil))
+        }
+        #expect(code(1920, 1080, (1, 1)) == H264FrameDescription.aspect16x9)
+        #expect(code(1920, 1080, nil) == H264FrameDescription.aspect16x9)
+        #expect(code(1440, 1080, (4, 3)) == H264FrameDescription.aspect16x9)
+        #expect(code(640, 480, nil) == H264FrameDescription.aspect4x3)
+        #expect(code(1280, 1024, (1, 1)) == H264FrameDescription.aspectSquare)
+    }
+
     @Test("PMT の映像は MPEG-2 と H.264 の両方。圧縮のままのランダムアクセスの見分けを方式で替える")
     func programMapVideo() {
         let h264 = ProgramMap(programNumber: 1, version: 0, pcrPID: 0x100, streams: [

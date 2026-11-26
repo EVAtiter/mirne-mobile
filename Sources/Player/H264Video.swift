@@ -214,8 +214,14 @@ enum H264FrameDescription {
     ]
     /// フレームレートが分からないときの frame_rate_code（29.97。日本の放送）
     static let defaultFrameRateCode: UInt8 = 4
-    /// 表示のアスペクト比を 16:9・4:3 と見なす許容の幅
-    static let aspectTolerance = 0.02
+    /// 表示のアスペクト比を 16:9・4:3 と見なす許容の幅。
+    /// BT.601 の SAR（40:33・10:11）は有効幅 704 で 16:9・4:3 になる値なので、幅 720 の絵では
+    /// 1.818・1.364 になり、16:9（1.778）・4:3（1.333）から 0.03〜0.04 ずれる。それも受け入れる幅にする。
+    /// 前は 0.02 で、40:33 の 720×480 が「画素が正方形」（3:2）に落ちていた
+    static let aspectTolerance = 0.05
+    /// 放送から作ったモバイル画質の大きさ。SAR が無い・1:1 でも 16:9 と見なす。
+    /// 1:1 のままだと 3:2 になり、放送の絵ではありえない（SIE 製の nasne のモバイル画質が 3:2 で描かれた。2026-11-26）
+    static let standardDefinitionSize = ElementaryStreamFormat.VideoSize(width: 720, height: 480)
     /// MPEG-2 の aspect_ratio_information（2 = 4:3、3 = 16:9、1 = 画素が正方形）
     static let aspect4x3: UInt8 = 2
     static let aspect16x9: UInt8 = 3
@@ -225,17 +231,39 @@ enum H264FrameDescription {
         let rateCode = parameters.frameRate.flatMap { rate in
             frameRateCodes.min { abs($0.rate - rate) < abs($1.rate - rate) }?.code
         } ?? defaultFrameRateCode
-        let aspect = parameters.displayAspectRatio
-        let aspectCode: UInt8
-        if abs(aspect - 16.0 / 9.0) < aspectTolerance {
-            aspectCode = aspect16x9
-        } else if abs(aspect - 4.0 / 3.0) < aspectTolerance {
-            aspectCode = aspect4x3
-        } else {
-            aspectCode = aspectSquare
-        }
-        return MPEG2Sequence(width: parameters.size.width, height: parameters.size.height, aspectRatioCode: aspectCode,
+        return MPEG2Sequence(width: parameters.size.width, height: parameters.size.height,
+                             aspectRatioCode: aspectCode(parameters),
                              frameRateCode: rateCode, progressiveSequence: parameters.frameMBsOnly)
+    }
+
+    /// 表示のアスペクト比のコード。16:9・4:3 の近いほう、どちらでもなければ「画素が正方形」
+    static func aspectCode(_ parameters: ElementaryStreamFormat.H264SequenceParameters) -> UInt8 {
+        let squarePixels = parameters.sampleAspectRatio.map { $0.width == $0.height } ?? true
+        if parameters.size == standardDefinitionSize && squarePixels {
+            return aspect16x9
+        }
+        let aspect = parameters.displayAspectRatio
+        if abs(aspect - 16.0 / 9.0) < aspectTolerance {
+            return aspect16x9
+        }
+        if abs(aspect - 4.0 / 3.0) < aspectTolerance {
+            return aspect4x3
+        }
+        return aspectSquare
+    }
+
+    /// ログ用の SAR の書き方（「40:33」「なし」）
+    static func sampleAspectDescription(_ parameters: ElementaryStreamFormat.H264SequenceParameters) -> String {
+        parameters.sampleAspectRatio.map { "\($0.width):\($0.height)" } ?? "なし"
+    }
+
+    /// ログ用の表示のアスペクト比の書き方
+    static func aspectDescription(_ code: UInt8) -> String {
+        switch code {
+        case aspect16x9: "16:9"
+        case aspect4x3: "4:3"
+        default: "画素が正方形"
+        }
     }
 }
 
@@ -347,7 +375,10 @@ public final class H264VideoDecoder: VideoDecoding, @unchecked Sendable {
         waitingForRandomAccess = true
         self.parameters = parameters
         let newSequence = H264FrameDescription.sequence(parameters)
-        logger.info("H.264 の SPS: \(newSequence.width, privacy: .public)×\(newSequence.height, privacy: .public)・プログレッシブ \(parameters.frameMBsOnly, privacy: .public)")
+        // SAR と表示の比は、SONY 製と Buffalo 製でモバイル画質の扱いが違ったので出す（診断で見分けるため）
+        let sampleAspectText = H264FrameDescription.sampleAspectDescription(parameters)
+        let displayAspectText = H264FrameDescription.aspectDescription(newSequence.aspectRatioCode)
+        logger.info("H.264 の SPS: \(newSequence.width, privacy: .public)×\(newSequence.height, privacy: .public)・プログレッシブ \(parameters.frameMBsOnly, privacy: .public)・SAR \(sampleAspectText, privacy: .public)・表示 \(displayAspectText, privacy: .public)")
         sequence = newSequence
 
         var description: CMVideoFormatDescription?
