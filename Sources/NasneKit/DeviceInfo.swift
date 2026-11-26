@@ -207,6 +207,10 @@ public struct WebAPIDeviceInfoService: Sendable {
     /// エンドポイントの表（転送層の機器の表）
     private var endpoints: WebAPIEndpointTable { transport.endpoints }
 
+    public func boxName() async throws -> String {
+        try await transport.getJSON(endpoints.boxNameGet).string("name") ?? ""
+    }
+
     public func deviceInfo() async throws -> DeviceInfo {
         let name = try await transport.getJSON(endpoints.boxNameGet)
         let version = try await transport.getJSON(endpoints.softwareVersionGet)

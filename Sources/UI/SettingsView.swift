@@ -79,6 +79,8 @@ struct SettingsView: View {
     @State private var confirming = false
     /// nasne を足す（登録の画面をシートで出す）
     @State private var adding = false
+    /// 印の付いた nasne の呼び名を変える（入力のシートを出す）
+    @State private var renaming = false
     @AppStorage(GuideSettingsKey.showsSubchannels) private var showsSubchannels = false
     @AppStorage(ViewerSettingsKey.captionsByDefault) private var captionsByDefault = false
     /// 止めた位置を nasne へ書き戻すか（既定は書き戻す）
@@ -105,9 +107,11 @@ struct SettingsView: View {
                 }
                 if SettingsActionLayout.usesRows {
                     Button("nasne を追加…") { adding = true }
+                    Button("名前を変える…", action: startRenaming)
                 } else {
                     HStack {
                         Spacer()
+                        Button("名前を変える…", action: startRenaming)
                         Button("登録を外す…", role: .destructive) { confirming = true }
                         Button("nasne を追加…") { adding = true }
                     }
@@ -115,6 +119,8 @@ struct SettingsView: View {
                 SettingsNote("印の付いた nasne を見ます。行を押すと切り替わります。",
                              details: ["番組表・予約・録画・メディア・情報は、印の付いた nasne のものを出します。",
                                        "切り替えると、再生は止まります。",
+                                       "「名前を変える…」は、印の付いた nasne をこのアプリで呼ぶ名前を変えます。空にすると本体名に戻ります。",
+                                       "nasne HOME で本体名を変えると、次につながったときにこのアプリにも出ます。",
                                        "「登録を外す…」は、印の付いた nasne の登録を外します。"])
                 if let date = services.registration.registeredAt {
                     LabeledContent("登録した日時", value: date.formatted(date: .abbreviated, time: .shortened))
@@ -176,6 +182,21 @@ struct SettingsView: View {
         } message: {
             Text("保存した登録と、\(DeviceWording.thisDevice) に保存したこの nasne の番組表・録画一覧を消します。\(DeviceWording.thisDevice) の視聴の記録（見終わった・途中まで見た位置）も消えます。nasne の録画や予約は消えません。")
         }
+        // 呼び名の入力（空にすると本体名に戻す。nasne の設定は変えない）。
+        // アラートの入力欄にしないのは、Mac で全部を選んで消した直後に Return を押すと、空になったことが届く前に閉じ、
+        // 前の呼び名が残ったため（2026-11-27。シートの入力欄は打つたびに中身が届く）
+        .sheet(isPresented: $renaming) {
+            RenameNasneSheet(name: currentEntry?.customName ?? "", boxName: currentBoxName) { name in
+                renaming = false
+                do {
+                    try environment.renameNasne(key: services.registration.storageKey, to: name)
+                } catch {
+                    self.error = ErrorText.present(error)
+                }
+            } close: {
+                renaming = false
+            }
+        }
         .sheet(isPresented: $adding) {
             // 登録が通ったら閉じる（設定のシートは開いたまま、足した台に印が付く）
             AddNasneSheet(model: environment.makeSetupModel { adding = false }) { adding = false }
@@ -184,8 +205,22 @@ struct SettingsView: View {
 
     /// 選んでいる nasne の呼び名
     private var currentName: String {
-        NasneDisplayName.names(for: environment.registrations.entries)[services.registration.storageKey]
-            ?? services.registration.friendlyName
+        environment.currentNasneName ?? services.registration.friendlyName
+    }
+
+    /// 選んでいる nasne の登録（呼び名・本体名を読む）
+    private var currentEntry: StoredNasne? {
+        environment.registrations.entries.first { $0.key == services.registration.storageKey }
+    }
+
+    /// 選んでいる nasne の本体名（呼び名の入力欄の薄い字に出す）
+    private var currentBoxName: String? {
+        currentEntry.flatMap(NasneDisplayName.boxName(of:))
+    }
+
+    /// 「名前を変える…」：今の呼び名（付けていなければ空）を入れた入力のシートを出す
+    private func startRenaming() {
+        renaming = true
     }
 }
 
@@ -202,8 +237,8 @@ private struct NasneRegistrationList: View {
                 HStack {
                     VStack(alignment: .leading, spacing: NasneRegistrationListLayout.rowSpacing) {
                         Text(names[entry.key] ?? entry.registration.friendlyName)
-                        if let maker = NasneDisplayName.maker(of: entry.device) {
-                            Text(maker).font(.caption).foregroundStyle(.secondary)
+                        if let caption = Self.caption(entry) {
+                            Text(caption).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
@@ -219,9 +254,44 @@ private struct NasneRegistrationList: View {
     }
 }
 
+extension NasneRegistrationList {
+    /// 行の下の小さな字：作り手と、呼び名を付けた台は本体名（「Buffalo・本体名 nasne」）
+    static func caption(_ entry: StoredNasne) -> String? {
+        var parts: [String] = []
+        if let maker = NasneDisplayName.maker(of: entry.device) { parts.append(maker) }
+        if entry.customName != nil, let box = NasneDisplayName.boxName(of: entry) { parts.append("本体名 \(box)") }
+        return parts.isEmpty ? nil : parts.joined(separator: "・")
+    }
+}
+
 private enum NasneRegistrationListLayout {
     /// 行の中の名前と作り手の間
     static let rowSpacing: CGFloat = 2
+}
+
+/// 呼び名を変えるシート（予約のシートと同じ器。Mac は下の帯に「キャンセル」「変える」、iOS は上の帯）。
+/// 入力欄の薄い字は本体名。Return でも「変える」と同じ
+private struct RenameNasneSheet: View {
+    @State var name: String
+    let boxName: String?
+    let save: (String) -> Void
+    let close: () -> Void
+
+    var body: some View {
+        ScheduleSheetFrame(title: "名前を変える",
+                           confirm: ScheduleSheetConfirm(title: "変える", disabled: false) { save(name) },
+                           cancelTitle: "キャンセル", cancel: close) {
+            Section {
+                TextField("名前", text: $name, prompt: Text(boxName ?? "nasne"))
+                    .onSubmit { save(name) }
+            } footer: {
+                Text("このアプリで呼ぶ名前です。nasne の本体名は変わりません。空にすると本体名に戻ります。")
+                    .scaledFont(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .sheetContentWidth(ScheduleSheetLayout.width)
+        .scheduleSheetSizing()
+    }
 }
 
 /// nasne を足すシート（登録の画面を使い回す。登録が通ると足した台へ切り替わり、このシートを閉じる）

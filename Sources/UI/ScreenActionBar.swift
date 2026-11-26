@@ -174,6 +174,8 @@ extension EnvironmentValues {
     /// nasne に届くか（主画面が配る。つながっていない間は nasne と通信する操作を押せなくし、オフラインなら「情報」に印を出す。
     /// 主画面の外〔視聴ウインドウなど〕は配らないのでつながっている扱い）
     @Entry var nasneLink = NasneLinkState.online
+    /// いま見ている nasne の呼び名（主画面が配る。予約のシートの「予約先」の行に出す。主画面の外では無い）
+    @Entry var currentNasneName: String? = nil
     /// 各画面の帯の中央に置く画面の切り替え（Mac の主画面が配る。主画面の外・iOS では無い）
     @Entry var mainBarSwitcher: Binding<MainSection>? = nil
     /// 各画面の帯の右端に出す「ライブ」「設定」（主画面が配る。主画面の外〔番組表のウインドウなど〕では無い）

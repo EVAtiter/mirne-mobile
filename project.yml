@@ -24,8 +24,8 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
     # 版とビルド番号はここだけに書く（Info.plist は $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) で参照する）
-    MARKETING_VERSION: "1.7.1"
-    CURRENT_PROJECT_VERSION: "21"
+    MARKETING_VERSION: "1.8.0"
+    CURRENT_PROJECT_VERSION: "22"
   configs:
     # xcodegen は #if DEBUG 用の DEBUG を自動定義しないので明示する
     Debug:

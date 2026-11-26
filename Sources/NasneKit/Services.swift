@@ -27,6 +27,8 @@ extension RegistrationService {
 /// 本体の情報（WebAPI の `status/*`）
 public protocol DeviceInfoService: Sendable {
     func deviceInfo() async throws -> DeviceInfo
+    /// 本体名だけ（`status/boxNameGet`。つながったときに読み直して、nasne HOME で変えた名前を保存し直す）
+    func boxName() async throws -> String
     func hddList() async throws -> [HDDEntry]
     func hddInfo(id: Int) async throws -> HDDInfo
     func channels(broadcastingType: Int) async throws -> [Channel]
@@ -120,6 +122,13 @@ public protocol ResumePositionService: Sendable {
 
 extension WebAPIRegistrationService: RegistrationService {}
 extension WebAPIDeviceInfoService: DeviceInfoService {}
+
+extension DeviceInfoService {
+    /// 既定は本体の情報から取る（試験の偽物のため。WebAPI の実装は boxNameGet だけを読む）
+    public func boxName() async throws -> String {
+        try await deviceInfo().name
+    }
+}
 extension RecordingCatalogService: ScheduleService, TitleCatalogService {}
 extension WebAPIProgramGuideService: ProgramGuideService {}
 extension DLNALiveCatalogService: LiveCatalogService {}

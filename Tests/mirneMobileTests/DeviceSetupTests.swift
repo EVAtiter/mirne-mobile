@@ -150,6 +150,61 @@ struct RegistrationStoreTests {
         try Data(#"{"version": 99, "devices": []}"#.utf8).write(to: url)
         #expect(throws: NasneError.self) { try store.load() }
     }
+
+    @Test("呼び名を付けて読み戻せる。前後の空白は除き、空にすると外れる。書き換えの保存（アドレスが変わった）でも残る")
+    func customName() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileRegistrationStore(fileURL: url, secrets: MemorySecretStore())
+        let device = sampleDevice()
+        try store.save(sampleRegistration(device), device: device)
+        #expect(try store.load().entries.first?.customName == nil)
+        try store.rename(key: device.udn, customName: "  録画用  ")
+        #expect(try store.load().entries.first?.customName == "録画用")
+        // アドレスが変わって保存し直しても、呼び名は残る
+        let moved = NasneDevice(host: "192.0.2.99", descriptionURL: device.descriptionURL, friendlyName: device.friendlyName,
+                                modelName: device.modelName, manufacturer: device.manufacturer, udn: device.udn, services: device.services)
+        try store.save(sampleRegistration(moved), device: moved)
+        let entry = try #require(try store.load().entries.first)
+        #expect(entry.registration.host == "192.0.2.99" && entry.customName == "録画用")
+        try store.rename(key: device.udn, customName: " ")
+        #expect(try store.load().entries.first?.customName == nil)
+        // 一覧に無い鍵は何もしない
+        try store.rename(key: "uuid:none", customName: "x")
+        #expect(try store.load().entries.count == 1)
+    }
+
+    @Test("呼び名の欄の無いファイル（1.7 までの形）も読め、版は 2 のまま")
+    func customNameAbsent() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileRegistrationStore(fileURL: url, secrets: MemorySecretStore())
+        let device = sampleDevice()
+        try store.save(sampleRegistration(device), device: device)
+        try store.rename(key: device.udn, customName: "録画用")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains(#""customName" : "録画用""#) && text.contains(#""version" : 2"#))
+        try store.rename(key: device.udn, customName: nil)
+        #expect(try !String(contentsOf: url, encoding: .utf8).contains("customName"))
+        #expect(try store.load().entries.first?.customName == nil)
+    }
+
+    @Test("本体名の書き換え：変わったときだけ書いて true。同じ・空・一覧に無い鍵は何もしない。呼び名は残る")
+    func updateBoxName() throws {
+        let url = temporaryStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileRegistrationStore(fileURL: url, secrets: MemorySecretStore())
+        let device = sampleDevice(name: "nasne")
+        try store.save(sampleRegistration(device), device: device)
+        try store.rename(key: device.udn, customName: "録画用")
+        #expect(try !store.updateBoxName(key: device.udn, name: "nasne"))
+        #expect(try !store.updateBoxName(key: device.udn, name: "  "))
+        #expect(try !store.updateBoxName(key: "uuid:none", name: "居間"))
+        #expect(try store.updateBoxName(key: device.udn, name: " 居間 "))
+        let entry = try #require(try store.load().entries.first)
+        #expect(entry.registration.friendlyName == "居間" && entry.device.friendlyName == "居間")
+        #expect(entry.customName == "録画用")
+    }
 }
 
 @Suite("登録した nasne の呼び名")
@@ -178,6 +233,21 @@ struct NasneDisplayNameTests {
         #expect(names["uuid:5"] == "nasne（Buffalo・2）")   // 空の名前は「nasne」として数える
         let pair = NasneDisplayName.names(for: [entries[0], entries[2]])
         #expect(pair["uuid:1"] == "nasne（SIE）" && pair["uuid:3"] == "nasne（Buffalo）")
+    }
+
+    @Test("呼び名を付けた台は呼び名で呼ぶ。呼び名どうしが同じなら、本体名と同じく作り手を添える")
+    func customNames() {
+        var first = entry("uuid:1", name: "nasne", model: NasneDevice.nasneModelName)
+        first.customName = "録画用"
+        var second = entry("uuid:2", name: "nasne", model: NasneDevice.buffaloNasneModelName)
+        let third = entry("uuid:3", name: "nasne", model: NasneDevice.nasneModelName)
+        var names = NasneDisplayName.names(for: [first, second, third])
+        #expect(names["uuid:1"] == "録画用")
+        #expect(names["uuid:2"] == "nasne（Buffalo）" && names["uuid:3"] == "nasne（SIE）")
+        second.customName = "録画用"
+        names = NasneDisplayName.names(for: [first, second, third])
+        #expect(names["uuid:1"] == "録画用（SIE）" && names["uuid:2"] == "録画用（Buffalo）" && names["uuid:3"] == "nasne")
+        #expect(NasneDisplayName.boxName(of: first) == "nasne")
     }
 }
 
@@ -219,6 +289,12 @@ private final class MemoryRegistrationStore: RegistrationStore, @unchecked Senda
     }
     func select(key: String) throws { lock.withLock { list.selectedKey = key } }
     func delete(key: String) throws { lock.withLock { list.entries.removeAll { $0.key == key } } }
+    func rename(key: String, customName: String?) throws {
+        lock.withLock {
+            if let index = list.entries.firstIndex(where: { $0.key == key }) { list.entries[index].customName = customName }
+        }
+    }
+    func updateBoxName(key: String, name: String) throws -> Bool { false }
 }
 
 @MainActor

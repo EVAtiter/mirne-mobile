@@ -234,6 +234,8 @@ struct ScheduleCreationView: View {
     @State var model: ScheduleCreationModel
     let channelName: (ScheduleChannel) -> String
     let finish: (String?) -> Void
+    /// 予約する nasne の呼び名（「予約先」の行に出す。1 台のときも出す）
+    @Environment(\.currentNasneName) private var nasneName
 
     var body: some View {
         ScheduleSheetFrame(
@@ -286,6 +288,7 @@ struct ScheduleCreationView: View {
     /// 手動の予約の入力（局・開始・長さ・画質）
     private var manualSection: some View {
         Section {
+            ScheduleNasneRow(name: nasneName)
             Picker("局", selection: $model.channelKey) {
                 ForEach(model.channels, id: \.scheduleKey) { channel in
                     Text(channel.remoteControlKey.map { "\($0)  \(channel.serviceName)" } ?? channel.serviceName)
@@ -317,6 +320,7 @@ struct ScheduleCreationView: View {
     private func programSection(_ program: ScheduleProgram) -> some View {
         Section {
             Text(program.title.isEmpty ? "（番組名なし）" : program.title).scaledFont(.headline)
+            ScheduleNasneRow(name: nasneName)
             LabeledContent("局", value: program.channel.serviceName)
             LabeledContent("放送", value: "\(program.start.formatted(.dateTime.month().day().weekday(.abbreviated).hour().minute()))〜\(program.end.formatted(.dateTime.hour().minute()))")
             if let duration = RecordingFormat.duration(program.durationSeconds) { LabeledContent("長さ", value: duration) }
@@ -359,6 +363,17 @@ struct ScheduleCreationView: View {
     }
 }
 
+/// 予約のシートの「予約先」の行（予約する・予約のある nasne の呼び名。局・放送・長さと同じ並び。
+/// 複数台のときにどの台か分かるように。1 台のときも出す。2026-11-25 に決めた。
+/// 項目名は「予約先」〔2026-11-27〕。このファイルの「録画先」は内蔵・外付けの別〔recordDestinationID〕を指す）
+struct ScheduleNasneRow: View {
+    let name: String?
+
+    var body: some View {
+        if let name { LabeledContent("予約先", value: name) }
+    }
+}
+
 /// 予約のシート（作成・画質の変更）の寸法
 enum ScheduleSheetLayout {
     /// 幅（macOS。iPad はシートの幅いっぱい）
@@ -397,6 +412,8 @@ struct ScheduleEditView: View {
     let finish: () -> Void
     /// nasne に届くか（つながっていない間は変更も削除もさせない）
     @Environment(\.nasneLink) private var link
+    /// 予約のある nasne の呼び名（「予約先」の行に出す）
+    @Environment(\.currentNasneName) private var nasneName
 
     /// 画質・繰り返しを変えられるか（始まる前の予約で、つながっているとき）
     private var editable: Bool { timing == .upcoming && link == .online }
@@ -413,6 +430,7 @@ struct ScheduleEditView: View {
         ) {
             Section {
                 Text(ScheduleText.title(model.original)).scaledFont(.headline)
+                ScheduleNasneRow(name: nasneName)
                 LabeledContent("局", value: channelName)
                 LabeledContent("時刻", value: ScheduleText.timeRange(model.original))
                 if let duration = RecordingFormat.duration(model.original.durationSeconds) { LabeledContent("長さ", value: duration) }

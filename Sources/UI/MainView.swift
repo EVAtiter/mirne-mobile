@@ -79,6 +79,7 @@ struct MainView: View {
                 }
             }
             .environment(\.nasneLink, liveStatus.link)
+            .environment(\.currentNasneName, environment.currentNasneName)
             // 録画一覧は、どの画面を開いていても、録画の一覧の世代が変わったら読み直す（ほかの画面の再生・番組表でも使うため）
             .onChange(of: recordings.observedGeneration) { Task { await recordings.refreshIfChanged() } }
             // 予約の一覧も、一度読んだら（予約の画面か番組表を開いたら）どの画面でも世代の変化で読み直す（番組表の予約済みの印のため）

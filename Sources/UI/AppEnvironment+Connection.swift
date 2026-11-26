@@ -54,6 +54,7 @@ extension AppEnvironment {
             // 拒まれた（登録が外れたなど）のはアドレスの問題ではないので、探さない
             logger.info("接続の確かめ（\(trigger.rawValue, privacy: .public)）: 今のアドレスに届いた・登録 \(accepted ? "通った" : "拒まれた", privacy: .public)")
             connection = .connected
+            await refreshBoxName()
             return
         } catch where NasneReachability.isUnreachable(error) {
             logger.info("接続の確かめ（\(trigger.rawValue, privacy: .public)）: 今のアドレスに届かない。探し直す")
@@ -86,6 +87,7 @@ extension AppEnvironment {
                 logger.info("探し直し: 新しいアドレスで見つけ、登録を書き換えた・\(started.elapsedMilliseconds, privacy: .public) ms")
             }
             connection = .connected
+            await refreshBoxName()
         } catch {
             logger.error("探し直し: 失敗（\(NasneDiagnostics.summary(error), privacy: .public)）")
             connection = .notFound

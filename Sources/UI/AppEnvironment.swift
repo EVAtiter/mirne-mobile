@@ -157,6 +157,34 @@ final class AppEnvironment {
     /// いま部品を作っている台の鍵（登録が無ければ nil）
     var currentNasneKey: String? { services?.registration.storageKey }
 
+    /// いま見ている台の呼び名（予約のシートの「予約先」の行・設定の確かめに出す。登録が無ければ nil）
+    var currentNasneName: String? {
+        guard let key = currentNasneKey else { return nil }
+        return NasneDisplayName.names(for: registrations.entries)[key] ?? services?.registration.friendlyName
+    }
+
+    /// このアプリの中だけの呼び名を付ける（設定の「名前を変える…」。空なら本体名に戻す）
+    func renameNasne(key: String, to name: String) throws {
+        try store.rename(key: key, customName: name)
+        registrations = try store.load()
+    }
+
+    /// 本体名を読み直し、変わっていれば保存し直す（nasne HOME で変えた名前をアプリにも出す。つながったと確かめたとき）。
+    /// 読めなくても何もしない（名前は前のまま）。ログに名前は出さない
+    func refreshBoxName() async {
+        guard let services else { return }
+        let key = services.registration.storageKey
+        let logger = Logger(subsystem: AppLog.subsystem, category: "discovery")
+        do {
+            let name = try await services.deviceInfo.boxName()
+            guard currentNasneKey == key, try store.updateBoxName(key: key, name: name) else { return }
+            registrations = try store.load()
+            logger.info("本体名が変わっていたので、保存し直した")
+        } catch {
+            logger.info("本体名を読み直せない（\(NasneDiagnostics.summary(error), privacy: .public)）")
+        }
+    }
+
     /// 登録した nasne に向けて部品を作る（control URL は記述から解く）
     func connect(registration: RegisteredNasne, device: NasneDevice) throws {
         let services = try NasneServices.live(registration: registration, device: device, client: client)

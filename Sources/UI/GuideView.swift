@@ -823,6 +823,8 @@ private struct GuideRows: View {
     let scroll: GuideScrollState
     /// 番組を押した（局の列の番号と番組）
     let select: (Int, GuidePlacement) -> Void
+    /// 押している番組（時刻をまたぐ番組は行ごとに欄を描くので、押している印をどの行の分にも出すために覚える）
+    @State private var pressed: GuidePressedProgram?
 
     var body: some View {
         let rows = scroll.visibleRows.clamped(to: 0..<table.hours.count)
@@ -834,9 +836,15 @@ private struct GuideRows: View {
             ForEach(Array(rows), id: \.self) { hour in
                 GuideHourRow(hour: hour, start: table.span.start.addingTimeInterval(TimeInterval(hour) * 3600),
                              stations: table.stations, cells: table.hours[hour], now: now,
-                             genreStyle: genreStyle, palette: palette, marks: marks) { station, placement in
+                             genreStyle: genreStyle, palette: palette, marks: marks, pressed: pressed) { station, placement in
                     // 番組を押したら詳細のシートを出す（選局はまだ無い。mirne mobile で足した）
                     select(station, placement)
+                } press: { program, isDown in
+                    if isDown {
+                        pressed = program
+                    } else if pressed == program {
+                        pressed = nil
+                    }
                 }
                     .equatable()
                     .alignmentGuide(.top) { _ in -CGFloat(hour) * GuideLayout.hourHeight }
@@ -861,12 +869,17 @@ private struct GuideHourRow: View, Equatable {
     let palette: GuideGenrePalette
     /// 予約済みの印（mirne mobile で足した）
     let marks: ScheduleMarks
+    /// 押している番組（無ければ nil）
+    let pressed: GuidePressedProgram?
     /// 番組を押した（局の列の番号と番組）
     let select: (Int, GuidePlacement) -> Void
+    /// 番組を押し始めた（true）・離した（false）
+    let press: (GuidePressedProgram, Bool) -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.hour == rhs.hour && lhs.start == rhs.start && lhs.now == rhs.now && lhs.stations == rhs.stations
             && lhs.cells == rhs.cells && lhs.genreStyle == rhs.genreStyle && lhs.palette == rhs.palette && lhs.marks == rhs.marks
+            && lhs.pressed == rhs.pressed
     }
 
     /// この行の始まりからの分（行の中での番組の位置）
@@ -896,10 +909,16 @@ private struct GuideHourRow: View, Equatable {
         ZStack(alignment: .topLeading) {
             Rectangle().fill(station.coverage == nil ? AnyShapeStyle(.quaternary.opacity(0.4)) : AnyShapeStyle(.background))
             ForEach(placements) { placement in
+                let program = GuidePressedProgram(station: index, eventID: placement.id)
                 ProgramCell(placement: placement, isOnAir: Self.isOnAir(placement.event, at: now),
                             hasEnded: (placement.event.end ?? .distantFuture) <= now,
                             scheduleMark: marks.mark(placement.event, on: station.entry), genreStyle: genreStyle,
-                            genreColor: placement.event.genre.flatMap(palette.color(for:))) { select(index, placement) }
+                            genreColor: placement.event.genre.flatMap(palette.color(for:)),
+                            isPressed: pressed == program) {
+                    select(index, placement)
+                } press: { isDown in
+                    press(program, isDown)
+                }
                     .equatable()
                     .offset(y: CGFloat(placement.offsetMinutes - startMinutes) * GuideLayout.pointsPerMinute)
             }
@@ -932,11 +951,16 @@ private struct ProgramCell: View, Equatable {
     let genreStyle: GuideGenreStyle
     /// ジャンルの色。ジャンルが無い番組は nil（色を付けない）
     let genreColor: Color?
+    /// この番組を押している（どの行の分の欄で押していても）
+    let isPressed: Bool
     let select: () -> Void
+    /// 押し始めた（true）・離した（false）
+    let press: (Bool) -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.placement == rhs.placement && lhs.isOnAir == rhs.isOnAir && lhs.hasEnded == rhs.hasEnded
             && lhs.scheduleMark == rhs.scheduleMark && lhs.genreStyle == rhs.genreStyle && lhs.genreColor == rhs.genreColor
+            && lhs.isPressed == rhs.isPressed
     }
 
     private var event: BroadcastEvent { placement.event }
@@ -996,8 +1020,33 @@ private struct ProgramCell: View, Equatable {
             .clipped()
             .contentShape(Rectangle())
             .overlay(alignment: .top) { GuideRule(axis: .horizontal) }
+            .opacity(isPressed ? GuideProgramPress.pressedOpacity : 1)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GuideProgramButtonStyle(press: press))
+    }
+}
+
+/// 押している番組（局の列の番号と番組の event_id。event_id は局の中でだけ一意なので、列と組にする）
+struct GuidePressedProgram: Equatable {
+    let station: Int
+    let eventID: UInt16
+}
+
+/// 番組の欄の押している間の印
+enum GuideProgramPress {
+    /// 押している間の欄の不透明度（体感の値。変えたら実機で確かめる）
+    static let pressedOpacity = 0.6
+}
+
+/// 番組の欄のボタンの見た目。押している間の印は自分では付けず、押し始め・離したことを知らせるだけにする。
+/// 時刻をまたぐ番組は 1 時間の行ごとに同じ欄を描いて行で切るので、OS の印（`.plain`）では押した行の分だけが
+/// 明るくなり、帯のように見えた（2026-11-27）。印は番組表が覚えた「押している番組」から、どの行の分にも同じに付ける
+private struct GuideProgramButtonStyle: ButtonStyle {
+    let press: (Bool) -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in press(isPressed) }
     }
 }
 

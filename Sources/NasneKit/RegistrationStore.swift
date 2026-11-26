@@ -77,10 +77,13 @@ public final class MemorySecretStore: SecretStore, @unchecked Sendable {
 public struct StoredNasne: Sendable, Equatable {
     public var registration: RegisteredNasne
     public var device: NasneDevice
+    /// このアプリの中だけの呼び名（設定の「名前を変える…」。付けていなければ nil で、本体名で呼ぶ）
+    public var customName: String?
 
-    public init(registration: RegisteredNasne, device: NasneDevice) {
+    public init(registration: RegisteredNasne, device: NasneDevice, customName: String? = nil) {
         self.registration = registration
         self.device = device
+        self.customName = customName
     }
 
     /// 台を見分ける鍵（記述の UDN。UDN の無い機器はアドレス）
@@ -129,6 +132,9 @@ struct SavedRegistration: Codable, Equatable {
     /// serviceType → 記述から解いた URL
     var services: [String: Service]
     var registeredAt: Date?
+    /// このアプリの中だけの呼び名（無ければ本体名で呼ぶ）。足しても書式の版は上げない：
+    /// 前の版は知らない欄を読み飛ばすので、同じファイルを読める（前の版が書き直すと、この欄は消える）
+    var customName: String?
 
     init(registration: RegisteredNasne, device: NasneDevice) {
         host = registration.host
@@ -150,6 +156,12 @@ struct SavedRegistration: Codable, Equatable {
                         (type, UPnPServiceInfo(serviceType: type, controlURL: service.controlURL,
                                                scpdURL: service.scpdURL, eventSubURL: service.eventSubURL))
                     }))
+    }
+
+    /// 呼び名として保存する形（前後の空白を除き、空なら nil）
+    static func normalizedCustomName(_ name: String?) -> String? {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     func registration(macAddress: String) -> RegisteredNasne {
@@ -184,6 +196,12 @@ public protocol RegistrationStore: Sendable {
     func select(key: String) throws
     /// 1 台の登録を外す（Keychain の MAC アドレスも消す）。選んでいた台なら、選びを外す（読むと最初の台になる）
     func delete(key: String) throws
+    /// このアプリの中だけの呼び名を付ける。空・空白だけなら外す（本体名で呼ぶ）。一覧に無い鍵は何もしない
+    func rename(key: String, customName: String?) throws
+    /// 本体名を書き換える（nasne HOME で変えた名前を、つながったときに読み直して保存する）。
+    /// 同じ名前・空の名前・一覧に無い鍵は何もしない。書き換えたら true
+    @discardableResult
+    func updateBoxName(key: String, name: String) throws -> Bool
 }
 
 /// ファイル（JSON）と Keychain に分けて保存する
@@ -219,17 +237,20 @@ public struct FileRegistrationStore: RegistrationStore {
         for device in saved.devices {
             // MAC アドレスが無ければ（Keychain を消した・別の端末から写した）、その台は登録が無いものとして扱う
             guard let mac = try secrets.read(account: Self.macAccount(for: device.key)) else { continue }
-            entries.append(StoredNasne(registration: device.registration(macAddress: mac), device: device.device))
+            entries.append(StoredNasne(registration: device.registration(macAddress: mac), device: device.device,
+                                       customName: SavedRegistration.normalizedCustomName(device.customName)))
         }
         return RegistrationList(entries: entries, selectedKey: saved.selected)
     }
 
     public func save(_ registration: RegisteredNasne, device: NasneDevice) throws {
         var saved = try readFile() ?? SavedRegistrationList(version: SavedRegistrationList.currentVersion, selected: nil, devices: [])
-        let entry = SavedRegistration(registration: registration, device: device)
+        var entry = SavedRegistration(registration: registration, device: device)
         // 先に Keychain、次にファイル（ファイルにだけ載って MAC が無い台は、load が「登録なし」と読む）
         try secrets.write(registration.macAddress, account: Self.macAccount(for: entry.key))
         if let index = saved.devices.firstIndex(where: { $0.key == entry.key }) {
+            // 書き換え（アドレスが変わった・登録し直した）でも、付けた呼び名は残す
+            entry.customName = saved.devices[index].customName
             saved.devices[index] = entry
         } else {
             saved.devices.append(entry)
@@ -241,6 +262,24 @@ public struct FileRegistrationStore: RegistrationStore {
         guard var saved = try readFile(), saved.devices.contains(where: { $0.key == key }), saved.selected != key else { return }
         saved.selected = key
         try writeFile(saved)
+    }
+
+    public func rename(key: String, customName: String?) throws {
+        guard var saved = try readFile(), let index = saved.devices.firstIndex(where: { $0.key == key }) else { return }
+        let name = SavedRegistration.normalizedCustomName(customName)
+        guard saved.devices[index].customName != name else { return }
+        saved.devices[index].customName = name
+        try writeFile(saved)
+    }
+
+    @discardableResult
+    public func updateBoxName(key: String, name: String) throws -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var saved = try readFile(), let index = saved.devices.firstIndex(where: { $0.key == key }),
+              saved.devices[index].friendlyName != trimmed else { return false }
+        saved.devices[index].friendlyName = trimmed
+        try writeFile(saved)
+        return true
     }
 
     public func delete(key: String) throws {
